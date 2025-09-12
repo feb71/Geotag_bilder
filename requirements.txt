@@ -1,0 +1,7 @@
+streamlit>=1.32
+pillow>=9.5
+piexif>=1.1.3
+pyproj>=3.6
+pandas>=2.0
+openpyxl>=3.1
+pydeck>=0.8
