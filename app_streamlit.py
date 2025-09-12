@@ -633,7 +633,7 @@ with tabA:
                         newname = build_new_name(patt, picked_label, os.path.basename(name), E0, N0)
                         base,ext=os.path.splitext(newname); cand=newname; i=1
                         while cand in used: cand=f"{base}_{i}.jpg"; i+=1
-                        used.add(cand); zout.writestr(cand, jpeg1); written+=1
+                        used.add(cand); zout.writestr(cand, jpeg1); counter['n']+=1
 
                     if mode=="ZIP-opplasting":
                         if not zip_up: st.error("Last opp ZIP.")
@@ -648,9 +648,9 @@ with tabA:
                             for f in files_up: process_one(f.name, f.read())
 
                     zout.close()
-                    if written>0:
+                    if counter['n']>0:
                         st.download_button("Last ned ZIP", data=zout_mem.getvalue(), file_name="geotagged.zip", mime="application/zip")
-                        st.success(f"Geotagget {written} bilder.")
+                        st.success(f"Geotagget {counter['n']} bilder.")
                     else:
                         st.error("Ingen bilder skrevet (0).")
 
