@@ -135,6 +135,18 @@ def transform_EN_to_epsg(E, N, src_epsg, dst_epsg):
 def normalize_orientation(im: Image.Image) -> Image.Image:
     return ImageOps.exif_transpose(im)
 
+def hex_to_rgb(s, default=(255,255,255)):
+    try:
+        s = str(s).strip()
+        if s.startswith("#"): s = s[1:]
+        if len(s) == 3:
+            s = "".join([c*2 for c in s])
+        if len(s) != 6: return default
+        r = int(s[0:2], 16); g = int(s[2:4], 16); b = int(s[4:6], 16)
+        return (r,g,b)
+    except:
+        return default
+
 def draw_north_arrow(im: Image.Image, heading_deg: float,
                      pos=("right","bottom"), size_px=120, margin=20,
                      color=(255,255,255), outline=(0,0,0)) -> Image.Image:
@@ -492,6 +504,11 @@ with st.sidebar:
             st.exception(e)
 
     st.subheader("Globale valg")
+    
+st.subheader("Nordpil (farge)")
+arrow_fill = st.color_picker("Fyllfarge", value="#FFFFFF", key="SB_arrow_fill")
+arrow_outline = st.color_picker("Konturfarge", value="#000000", key="SB_arrow_outline")
+
     draw_arrow_global = st.checkbox("Tegn nordpil på bilder", value=True, key="SB_draw_arrow")
     arrow_size_global = st.slider("Pil-størrelse (px)", 60, 240, 120, key="SB_arrow_size")
     auto_180 = st.checkbox("Auto-180 (flipp heading hvis ~180° fra senter/rotasjon)", value=True, key="SB_auto180")
@@ -505,6 +522,10 @@ with st.sidebar:
     st.session_state["DRAW_ARROW"] = draw_arrow_global
     st.session_state["ARROW_SIZE"] = arrow_size_global
     st.session_state["AUTO_180"] = auto_180
+    
+st.session_state["ARROW_COLOR"] = hex_to_rgb(arrow_fill, (255,255,255))
+st.session_state["ARROW_OUTLINE"] = hex_to_rgb(arrow_outline, (0,0,0))
+
     st.session_state["CENTERS_DICT"] = centers_dict
     st.session_state["CENTERS_DF"] = centers_df
     st.session_state["POINTS_DF"] = points_df
@@ -586,7 +607,7 @@ def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None, 
     return E, N, Alt, (_wrap_deg(hd) if _is_valid_number(hd) else None), center_hint, line_h, dist
 
 # ===================== Tabs =====================
-tabA, tabD = st.tabs(["A) Batch geotagg", "D) Kart"])
+tabA, tabC, tabD = st.tabs(["A) Batch geotagg", "C) Manuell pr. bilde", "D) Kart"])
 
 with tabA:
     st.subheader("A) Geotagg mange bilder (bruk prosjektdata fra sidepanelet)")
@@ -658,7 +679,7 @@ with tabA:
                         im = Image.open(io.BytesIO(jpeg0))
                         if draw_arrow and (_is_valid_number(hd) or _is_valid_number(manual_val)):
                             use_hd = hd if _is_valid_number(hd) else manual_val
-                            im = draw_north_arrow(im, _wrap_deg(use_hd), size_px=arrow_size)
+                            im = draw_north_arrow(im, _wrap_deg(use_hd), size_px=arrow_size, color=st.session_state.get('ARROW_COLOR',(255,255,255)), outline=st.session_state.get('ARROW_OUTLINE',(0,0,0)))
                         buf = io.BytesIO(); im.save(buf, "jpeg", quality=95); buf.seek(0)
                         jpeg1 = write_exif_jpeg_bytes(buf.getvalue(), lat, lon, Alt, (hd if _is_valid_number(hd) else manual_val))
                         Xdoc, Ydoc = transform_EN_to_epsg(E, N, epsg_pts, epsg_out)
@@ -723,6 +744,163 @@ with tabA:
                         st.dataframe(pd.DataFrame(skipped))
         except Exception as e:
             st.exception(e)
+
+
+with tabC:
+    st.subheader("C) Manuell pr. bilde – forhåndsvisning og kart")
+    centers_dict = st.session_state.get("CENTERS_DICT") or {}
+    epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
+    draw_arrow = st.session_state.get("DRAW_ARROW", True)
+    arrow_size = st.session_state.get("ARROW_SIZE", 120)
+    arrow_col = st.session_state.get("ARROW_COLOR", (255,255,255))
+    arrow_outline = st.session_state.get("ARROW_OUTLINE", (0,0,0))
+
+    if centers_dict:
+        options = sorted(list(centers_dict.keys()))
+        picked_label_C = st.selectbox("Velg kum/S_OBJID", options, key="C_pick_label")
+    else:
+        picked_label_C = None
+        st.warning("Ingen kum-senter i prosjektdata ennå. Last opp punkter i sidepanelet.")
+
+    files_up_C = st.file_uploader("Dra inn bilder (flere)", type=["jpg","jpeg","png","tif","tiff","heic","heif"], accept_multiple_files=True, key="C_files")
+    if files_up_C and len(files_up_C)>0 and picked_label_C:
+        # Hold manual headings per filename in session
+        if "MANUAL_HEADINGS" not in st.session_state:
+            st.session_state["MANUAL_HEADINGS"] = {}
+        man_dict = st.session_state["MANUAL_HEADINGS"]
+
+        names = [f.name for f in files_up_C]
+        sel = st.selectbox("Velg bilde for forhåndsvisning", names, key="C_sel_name")
+        cur_idx = names.index(sel) if sel in names else 0
+        colL, colR = st.columns([2,1])
+
+        # Load current image as preview
+        with colL:
+            file_obj = files_up_C[cur_idx]
+            payload = file_obj.read()
+            file_obj.seek(0)
+            from PIL import Image
+            im0 = Image.open(io.BytesIO(payload))
+            im0 = normalize_orientation(im0).convert("RGB")
+            # Compute position & default heading (no manual override)
+            info = centers_dict.get(picked_label_C, {})
+            E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
+            E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label_C, E0,N0, Alt0, None, manual_override=None)
+            cur_manual = man_dict.get(sel)
+            show_hd = cur_manual if _is_valid_number(cur_manual) else hd
+            if draw_arrow and _is_valid_number(show_hd):
+                im_prev = draw_north_arrow(im0.copy(), _wrap_deg(show_hd), size_px=arrow_size, color=arrow_col, outline=arrow_outline)
+            else:
+                im_prev = im0
+            st.image(im_prev, caption=f"Forhåndsvisning – heading={show_hd if show_hd is not None else '—'}° (kilde: {'manuell' if cur_manual is not None else ('linje' if line_h is not None else ('kum-azimut' if cent is not None else 'ingen'))})", use_column_width=True)
+
+        with colR:
+            st.markdown("**Sett heading for valgt bilde**")
+            if not _is_valid_number(hd):
+                st.info("Ingen heading funnet automatisk – sett manuelt.")
+            man_val = st.slider("Manuell heading (0–359°)", 0, 359, int(cur_manual if _is_valid_number(cur_manual) else int(hd or 0)), key="C_slider")
+            c1, c2, c3 = st.columns(3)
+            if c1.button("−10°", key="C_m10"):
+                man_val = (man_val - 10) % 360; st.session_state["C_slider"] = man_val
+            if c2.button("+10°", key="C_p10"):
+                man_val = (man_val + 10) % 360; st.session_state["C_slider"] = man_val
+            if c3.button("Flip 180°", key="C_flip"):
+                man_val = (man_val + 180) % 360; st.session_state["C_slider"] = man_val
+
+            if st.button("Lagre heading for dette bildet", key="C_save_one"):
+                man_dict[sel] = float(man_val)
+                st.success(f"Lagret {sel}: {man_val}°")
+
+        st.markdown("---")
+        st.markdown("**Kart (kum-senter + heading-vektor for valgt bilde)**")
+        try:
+            import pydeck as pdk
+            if E0 is not None and N0 is not None:
+                from pyproj import Transformer
+                tr = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
+                lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
+                # build heading line (length 5 m) from center using show_hd or man_val
+                use_heading = st.session_state["MANUAL_HEADINGS"].get(sel, show_hd)
+                if _is_valid_number(use_heading):
+                    L = 5.0
+                    rad = math.radians(use_heading)
+                    # Heading 0° = nord (+N), 90° = øst (+E)
+                    E1 = E0 + math.sin(rad)*L
+                    N1 = N0 + math.cos(rad)*L
+                    lat1, lon1 = transform_EN_to_wgs84(E1, N1, epsg_pts)
+                    arrow_path = [{"path": [[lon0, lat0],[lon1, lat1]]}]
+                    arr_layer = pdk.Layer("PathLayer", arrow_path, get_path="path", get_width=3, get_color=[200,60,60])
+                else:
+                    arr_layer = None
+
+                layers = []
+                # center point
+                centers_df = st.session_state.get("CENTERS_DF")
+                if centers_df is not None and not centers_df.empty:
+                    # show all centers
+                    tr_pts = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
+                    tmp = centers_df.copy()
+                    tmp["lon"], tmp["lat"] = zip(*[tr_pts.transform(e, n) for e,n in zip(tmp["center_E"], tmp["center_N"])])
+                    tmp["color"] = [ [0,150,255] ] * len(tmp)
+                    layers.append(pdk.Layer("ScatterplotLayer", tmp, get_position='[lon, lat]', get_radius=4, get_fill_color='color', pickable=True))
+                # lines
+                lines = st.session_state.get("LINES_LIST")
+                epsg_lin = st.session_state.get("LINES_EPSG", 25832)
+                if lines:
+                    if epsg_lin != 4326:
+                        tr_lin = Transformer.from_crs(epsg_lin, 4326, always_xy=True)
+                        def to_wgs_path(coords): 
+                            xys = [tr_lin.transform(x,y) for (x,y) in coords]
+                            return [[x,y] for (x,y) in xys]
+                    else:
+                        def to_wgs_path(coords): return [[x,y] for (x,y) in coords]
+                    paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
+                    layers.append(pdk.Layer("PathLayer", paths, get_path="path", get_width=2, get_color=[80,80,200]))
+                if arr_layer: layers.append(arr_layer)
+                view_state = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=18)
+                st.pydeck_chart(pdk.Deck(map_style=None, layers=layers, initial_view_state=view_state), use_container_width=True)
+            else:
+                st.info("Kum-senter mangler E/N – last opp punkter i sidepanelet.")
+        except Exception as e:
+            st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
+
+        st.markdown("---")
+        if st.button("Eksporter alle som ZIP (med manuell heading der satt)", key="C_export"):
+            processed=0; skipped=[]
+            zout_mem = io.BytesIO(); zout = zipfile.ZipFile(zout_mem, "w", zipfile.ZIP_DEFLATED)
+            for f in files_up_C:
+                try:
+                    payload = f.read(); f.seek(0)
+                    from PIL import Image
+                    im0 = Image.open(io.BytesIO(payload))
+                    im0 = normalize_orientation(im0).convert("RGB")
+                    info = centers_dict.get(picked_label_C, {})
+                    E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
+                    # compute heading: prefer manual per file, else auto
+                    man = man_dict.get(f.name)
+                    E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label_C, E0,N0, Alt0, None, manual_override=man if man is not None else None)
+                    if E is None or N is None:
+                        skipped.append({"file": f.name, "reason": "Mangler E/N"}); continue
+                    lat, lon = transform_EN_to_wgs84(E, N, epsg_pts)
+                    if draw_arrow and _is_valid_number(hd):
+                        im0 = draw_north_arrow(im0, _wrap_deg(hd), size_px=arrow_size, color=arrow_col, outline=arrow_outline)
+                    buf = io.BytesIO(); im0.save(buf, "jpeg", quality=95); buf.seek(0)
+                    jpeg1 = write_exif_jpeg_bytes(buf.getvalue(), lat, lon, Alt, hd)
+                    newname = f"{picked_label_C}_{os.path.splitext(os.path.basename(f.name))[0]}.jpg"
+                    zout.writestr(newname, jpeg1)
+                    processed += 1
+                except Exception as e:
+                    skipped.append({"file": f.name, "reason": str(e)})
+            zout.close()
+            if processed>0:
+                st.download_button("Last ned ZIP (Tab C)", data=zout_mem.getvalue(), file_name="geotag_manual.zip", mime="application/zip")
+                st.success(f"Skrev {processed} bilder.")
+            if skipped:
+                st.warning("Hoppet over:")
+                st.dataframe(pd.DataFrame(skipped))
+    else:
+        st.info("Last opp bilder og velg kum for manuell forhåndsvisning.")
+
 
 with tabD:
     st.subheader("D) Kart – senterpunkter og linjer")
