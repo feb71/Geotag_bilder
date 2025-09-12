@@ -509,27 +509,27 @@ st.subheader("Nordpil (farge)")
 arrow_fill = st.color_picker("Fyllfarge", value="#FFFFFF", key="SB_arrow_fill")
 arrow_outline = st.color_picker("Konturfarge", value="#000000", key="SB_arrow_outline")
 
-    draw_arrow_global = st.checkbox("Tegn nordpil på bilder", value=True, key="SB_draw_arrow")
-    arrow_size_global = st.slider("Pil-størrelse (px)", 60, 240, 120, key="SB_arrow_size")
-    auto_180 = st.checkbox("Auto-180 (flipp heading hvis ~180° fra senter/rotasjon)", value=True, key="SB_auto180")
+draw_arrow_global = st.checkbox("Tegn nordpil på bilder", value=True, key="SB_draw_arrow")
+arrow_size_global = st.slider("Pil-størrelse (px)", 60, 240, 120, key="SB_arrow_size")
+auto_180 = st.checkbox("Auto-180 (flipp heading hvis ~180° fra senter/rotasjon)", value=True, key="SB_auto180")
 
-    if not draw_arrow_global:
-        st.info("Nordpil er slått AV i prosjektet – slå på for å tegne pil i Tab A.")
+if not draw_arrow_global:
+    st.info("Nordpil er slått AV i prosjektet – slå på for å tegne pil i Tab A.")
 
-    st.session_state["POINTS_EPSG"] = epsg_pts
-    st.session_state["LINES_EPSG"] = epsg_lines
-    st.session_state["BUFFER_M"] = buffer_m
-    st.session_state["DRAW_ARROW"] = draw_arrow_global
-    st.session_state["ARROW_SIZE"] = arrow_size_global
-    st.session_state["AUTO_180"] = auto_180
+st.session_state["POINTS_EPSG"] = epsg_pts
+st.session_state["LINES_EPSG"] = epsg_lines
+st.session_state["BUFFER_M"] = buffer_m
+st.session_state["DRAW_ARROW"] = draw_arrow_global
+st.session_state["ARROW_SIZE"] = arrow_size_global
+st.session_state["AUTO_180"] = auto_180
     
 st.session_state["ARROW_COLOR"] = hex_to_rgb(arrow_fill, (255,255,255))
 st.session_state["ARROW_OUTLINE"] = hex_to_rgb(arrow_outline, (0,0,0))
 
-    st.session_state["CENTERS_DICT"] = centers_dict
-    st.session_state["CENTERS_DF"] = centers_df
-    st.session_state["POINTS_DF"] = points_df
-    st.session_state["LINES_LIST"] = lines_list
+st.session_state["CENTERS_DICT"] = centers_dict
+st.session_state["CENTERS_DF"] = centers_df
+st.session_state["POINTS_DF"] = points_df
+st.session_state["LINES_LIST"] = lines_list
 
 # ===================== Core orientation =====================
 
