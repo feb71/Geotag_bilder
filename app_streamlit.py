@@ -14,7 +14,7 @@ try:
 except Exception:
     HEIC_OK = False
 
-st.set_page_config(page_title="Geotagging bilder v10.3 • Globalt prosjektoppsett", layout="wide")
+st.set_page_config(page_title="Geotagging bilder v10.4 • Globalt prosjektoppsett", layout="wide")
 
 # ===================== Helpers =====================
 
@@ -325,8 +325,8 @@ def nearest_heading_on_polyline(coords, pt):
 
 # ===================== Sidebar (global project) =====================
 
-st.title("Geotagging bilder v10.3")
-st.caption("Globalt prosjektoppsett • Linje-heading • Auto-180 • S_HYPERLINK • Kum-senter • Kart • HEIC/PNG/TIF → JPEG")
+st.title("Geotagging bilder v10.4")
+st.caption("Globalt prosjektoppsett • Linje-heading • Auto-180 • S_HYPERLINK • Kum-senter • Kart • HEIC/PNG/TIF → JPEG • Debug")
 
 with st.sidebar:
     st.header("Prosjektdata (gjelder alle faner)")
@@ -416,6 +416,14 @@ with st.sidebar:
             if type_filter.strip():
                 allowed = set([s.strip() for s in type_filter.split(",") if s.strip()])
                 lines_list = [L for L in lines_list if (L["objtype"] in allowed)]
+            # Debug summary
+            if lines_list:
+                n_lines = len(lines_list)
+                n_vertices = sum(len(L["coords"]) for L in lines_list)
+                some_types = sorted({str(L.get("objtype")) for L in lines_list if L.get("objtype")})[:5]
+                st.success(f"Lastet {n_lines} linjer med totalt {n_vertices} punkter. Typer (utdrag): {', '.join(some_types) if some_types else '(ingen oppgitt)'}")
+            else:
+                st.warning("Ingen linjer ble tolket fra fila (prøv GeoJSON-eksport eller en annen XML/LandXML).")
         except Exception as e:
             st.exception(e)
 
@@ -423,6 +431,9 @@ with st.sidebar:
     draw_arrow_global = st.checkbox("Tegn nordpil på bilder", value=True, key="SB_draw_arrow")
     arrow_size_global = st.slider("Pil-størrelse (px)", 60, 240, 120, key="SB_arrow_size")
     auto_180 = st.checkbox("Auto-180 (flipp heading hvis ~180° fra senter/rotasjon)", value=True, key="SB_auto180")
+
+    if not draw_arrow_global:
+        st.info("Nordpil er slått AV i prosjektet – slå på for å tegne pil i Tab A.")
 
     st.session_state["POINTS_EPSG"] = epsg_pts
     st.session_state["LINES_EPSG"] = epsg_lines
@@ -479,7 +490,7 @@ def heading_from_lines(E, N):
     if dist is None: return None, None
     return (hd if dist <= buf else None), dist
 
-def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None):
+def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None, manual_override=None):
     centers = st.session_state.get("CENTERS_DICT") or {}
     epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
 
@@ -495,7 +506,10 @@ def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None):
     line_h, dist = heading_from_lines(E, N) if (E is not None and N is not None) else (None, None)
     hd = line_h if _is_valid_number(line_h) else (center_hint if _is_valid_number(center_hint) else (Rot if _is_valid_number(Rot) else None))
 
-    if st.session_state.get("AUTO_180", True):
+    if _is_valid_number(manual_override):
+        hd = float(manual_override)
+
+    if st.session_state.get("AUTO_180", True) and not _is_valid_number(manual_override):
         if _is_valid_number(line_h) and _is_valid_number(center_hint):
             d = ang_diff(line_h, center_hint)
             if d is not None and 150 <= d <= 210:
@@ -531,6 +545,11 @@ with tabA:
     patt = {"Behold originalt navn":"keep","S_OBJID + originalt navn":"label_orig","Kun S_OBJID":"label_only","S_OBJID + avrundet E/N":"label_en"}[rename_pattern_A]
     epsg_out = ensure_epsg("TAB_A_DOC_EPSG", "Dokumentasjons-CRS for CSV (eksport)", default=25832)
 
+    # Manual heading override (draw arrow even if no line/center rot)
+    with st.expander("Avansert: manuell heading/Nord (grader)"):
+        man_enable = st.checkbox("Overstyr heading manuelt", value=False, key="A_manual_on")
+        man_heading = st.number_input("Manuell heading (0–359°)", min_value=0, max_value=359, value=0, key="A_manual_val")
+
     # Uploaders visible BEFORE run
     zip_up = None; files_up = None
     if mode == "ZIP-opplasting":
@@ -559,6 +578,7 @@ with tabA:
                     st.error(f"Kum '{picked_label}' mangler E/N. Kontroller punktfilen i sidepanelet.")
                 else:
                     processed = []; skipped = []
+                    manual_val = float(man_heading) if man_enable else None
 
                     def process_one(name: str, payload: bytes):
                         if not name.lower().endswith(exts_ok):
@@ -567,20 +587,22 @@ with tabA:
                             jpeg0 = load_any_to_jpeg_bytes(payload)
                         except Exception as e:
                             skipped.append({"file": name, "reason": f"Kunne ikke lese bilde: {e}"}); return None
-                        E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label, E0,N0, Alt0, None)
+                        E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label, E0,N0, Alt0, None, manual_override=manual_val)
                         if E is None or N is None:
                             skipped.append({"file": name, "reason": "Mangler E/N (ingen kum-senter)"}); return None
                         lat, lon = transform_EN_to_wgs84(E, N, epsg_pts)
                         im = Image.open(io.BytesIO(jpeg0))
-                        if draw_arrow and _is_valid_number(hd):
-                            im = draw_north_arrow(im, _wrap_deg(hd), size_px=arrow_size)
+                        if draw_arrow and (_is_valid_number(hd) or _is_valid_number(manual_val)):
+                            use_hd = hd if _is_valid_number(hd) else manual_val
+                            im = draw_north_arrow(im, _wrap_deg(use_hd), size_px=arrow_size)
                         buf = io.BytesIO(); im.save(buf, "jpeg", quality=95); buf.seek(0)
-                        jpeg1 = write_exif_jpeg_bytes(buf.getvalue(), lat, lon, Alt, hd)
+                        jpeg1 = write_exif_jpeg_bytes(buf.getvalue(), lat, lon, Alt, (hd if _is_valid_number(hd) else manual_val))
                         Xdoc, Ydoc = transform_EN_to_epsg(E, N, epsg_pts, epsg_out)
                         processed.append({"file": name, "S_OBJID": picked_label, "E_in": E, "N_in": N,
                                           "lat": lat, "lon": lon, f"E_{epsg_out}": Xdoc, f"N_{epsg_out}": Ydoc,
-                                          "hoyde": Alt, "heading": hd, "heading_line": line_h,
-                                          "center_hint": cent, "dist_to_line": dist})
+                                          "hoyde": Alt, "heading": (hd if _is_valid_number(hd) else manual_val),
+                                          "heading_line": line_h, "center_hint": cent, "dist_to_line": dist,
+                                          "heading_source": "linje" if _is_valid_number(line_h) else ("kum-azimut" if _is_valid_number(cent) else ("manuell" if _is_valid_number(manual_val) else "ukjent"))})
                         return jpeg1
 
                     written = 0
@@ -621,16 +643,16 @@ with tabA:
 
                     zout.close()
                     if written > 0:
-                        if mode == "ZIP-opplasting":
-                            st.download_button("Last ned geotagget ZIP", data=zout_mem.getvalue(), file_name="geotagged.zip", mime="application/zip")
-                        else:
-                            st.download_button("Last ned ZIP med geotaggede bilder", data=zout_mem.getvalue(), file_name="geotagged_upload.zip", mime="application/zip")
+                        dl_name = "geotagged.zip" if mode=="ZIP-opplasting" else "geotagged_upload.zip"
+                        st.download_button("Last ned ZIP", data=zout_mem.getvalue(), file_name=dl_name, mime="application/zip")
                         st.success(f"Geotagget {written} bilder.")
                     else:
                         st.error("Ingen bilder skrevet (0). Kontroller filtypene/kumvalget.")
 
                     if processed:
                         dfo=pd.DataFrame(processed)
+                        st.markdown("**Debug: første 10 rader (heading-kilde, dist_to_line m.m.)**")
+                        st.dataframe(dfo.head(10), use_container_width=True)
                         st.download_button("Last ned CSV (Tab A)", dfo.to_csv(index=False).encode("utf-8"), "geotag_tabA.csv", "text/csv")
                     if skipped:
                         st.warning("Hoppet over:")
@@ -640,10 +662,12 @@ with tabA:
 
 with tabD:
     st.subheader("D) Kart – senterpunkter og linjer")
+    centers_df = st.session_state.get("CENTERS_DF")
+    lines = st.session_state.get("LINES_LIST")
+    if centers_df is None and not lines:
+        st.info("Last opp punkter/linjer i sidepanelet for å se kart.")
     try:
         import pydeck as pdk
-        centers_df = st.session_state.get("CENTERS_DF")
-        lines = st.session_state.get("LINES_LIST")
         epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
         epsg_lin = st.session_state.get("LINES_EPSG", 25832)
         layers = []
@@ -666,10 +690,15 @@ with tabD:
             else:
                 def to_wgs_path(coords): return [[x,y] for (x,y) in coords]
             paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
+            if not paths:
+                st.warning("Ingen linjegeometri å vise (0 paths). Sjekk at filen faktisk inneholder linjer.")
             layers.append(pdk.Layer("PathLayer", paths, get_path="path", get_width=2, get_color=[80,80,200]))
+        else:
+            st.info("Ingen linjer lastet eller tolket fra filen. Prøv å eksportere til GeoJSON fra Gemini Terrain hvis LandXML ikke gir noe.")
+
         st.pydeck_chart(pdk.Deck(map_style=None, layers=layers, initial_view_state=view_state), use_container_width=True)
     except Exception as e:
         st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
-        
+
 st.markdown("---")
-st.caption("v10.3 • Global sidebar (punkter/linjer) • heading fra linjer • auto-180 • EXIF WGS84 • nordpil • Kart • HEIC/PNG/TIF → JPEG")
+st.caption("v10.4 • Global sidebar (punkter/linjer) • heading fra linjer • auto-180 • EXIF WGS84 • nordpil • Kart • HEIC/PNG/TIF → JPEG • Debug logg")
