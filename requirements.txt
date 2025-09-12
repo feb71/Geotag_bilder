@@ -6,3 +6,4 @@ pandas>=2.0
 openpyxl>=3.1
 pydeck>=0.8
 pillow-heif>=0.16
+streamlit-image-coordinates>=0.1.6
