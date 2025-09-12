@@ -14,8 +14,8 @@ try:
 except Exception:
     HEIC_OK = False
 
-st.set_page_config(page_title="Geotagging bilder v10.7", layout="wide")
-st.title("Geotagging bilder v10.7")
+st.set_page_config(page_title="Geotagging bilder v10.8", layout="wide")
+st.title("Geotagging bilder v10.8")
 st.caption("Punkter/linjer → heading, nordpil i bilde + EXIF, manuell pr. bilde, kart, CRS-verktøy")
 
 # ---------- helpers ----------
@@ -589,6 +589,7 @@ with tabA:
                     used=set()
                     def process_one(name, payload):
                         nonlocal written
+                        name = str(name)
                         if not name.lower().endswith(exts_ok): 
                             skipped.append({"file": name, "reason":"Ikke-støttet filtype"}); return
                         try: jpeg0 = load_any_to_jpeg_bytes(payload)
@@ -605,7 +606,30 @@ with tabA:
                         buf = io.BytesIO(); im.save(buf,"jpeg", quality=95); buf.seek(0)
                         jpeg1 = write_exif_jpeg_bytes(buf.getvalue(), lat, lon, Alt, (hd if _is_valid_number(hd) else manual_val))
                         Xdoc,Ydoc = transform_EN_to_epsg(E,N, epsg_pts, epsg_out)
-                        processed.append({"file": name, "S_OBJID": picked_label, "E_in":E, "N_in":N, "lat":lat, "lon":lon, f"E_{epsg_out}":Xdoc, f"N_{epsg_out}":Ydoc, "hoyde":Alt, "heading": (hd if _is_valid_number(hd) else manual_val), "heading_line": line_h, "center_hint": cent, "dist_to_line": dist, "heading_source": "linje" if _is_valid_number(line_h) else ("kum-azimut" if _is_valid_number(cent) else ("manuell" if _is_valid_number(manual_val) else "ukjent"))})
+
+                        # heading_source (robust og lesbart)
+                        if _is_valid_number(line_h):
+                            heading_source = "linje"
+                        elif _is_valid_number(cent):
+                            heading_source = "kum-azimut"
+                        elif _is_valid_number(manual_val):
+                            heading_source = "manuell"
+                        else:
+                            heading_source = "ukjent"
+
+                        processed.append({
+                            "file": name,
+                            "S_OBJID": picked_label,
+                            "E_in": E, "N_in": N,
+                            "lat": lat, "lon": lon,
+                            f"E_{epsg_out}": Xdoc, f"N_{epsg_out}": Ydoc,
+                            "hoyde": Alt,
+                            "heading": (hd if _is_valid_number(hd) else manual_val),
+                            "heading_line": line_h,
+                            "center_hint": cent,
+                            "dist_to_line": dist,
+                            "heading_source": heading_source
+                        })
                         newname = build_new_name(patt, picked_label, os.path.basename(name), E0, N0)
                         base,ext=os.path.splitext(newname); cand=newname; i=1
                         while cand in used: cand=f"{base}_{i}.jpg"; i+=1
@@ -801,4 +825,4 @@ with tabD:
         st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
 
 st.markdown("---")
-st.caption("v10.7 • CRS-verktøy (swap/scale/offset), kartetiketter, manuell pr. bilde, farger på nordpil, LandXML/GeoJSON, EXIF WGS84")
+st.caption("v10.8 • CRS-verktøy (swap/scale/offset), kartetiketter, manuell pr. bilde, farger på nordpil, LandXML/GeoJSON, EXIF WGS84")
