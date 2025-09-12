@@ -6,9 +6,17 @@ from PIL import Image, ImageOps, ImageDraw
 import piexif
 from pyproj import Transformer, CRS
 
-st.set_page_config(page_title="Geotagging bilder v10 • Globalt prosjektoppsett • Auto-180 • Linje-heading overalt", layout="wide")
+# Optional HEIC support
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    HEIC_OK = True
+except Exception:
+    HEIC_OK = False
 
-# ===================== Common helpers =====================
+st.set_page_config(page_title="Geotagging bilder v10.2 • Globalt prosjektoppsett • HEIC/PNG/TIF → JPEG", layout="wide")
+
+# ===================== Helpers =====================
 
 def deg_to_dms_rational(dd):
     sign = 1 if dd >= 0 else -1
@@ -51,20 +59,29 @@ def exif_gps(lat_dd, lon_dd, alt=None, direction=None):
         gps[piexif.GPSIFD.GPSAltitude] = (int(round(abs(alt)*100)), 100)
     if _is_valid_number(direction):
         direction = _wrap_deg(direction)
-        gps[piexif.GPSIFD.GPSImgDirectionRef] = b'T'  # True north
+        gps[piexif.GPSIFD.GPSImgDirectionRef] = b'T'
         gps[piexif.GPSIFD.GPSImgDirection] = (int(round(direction*100)), 100)
     return gps
 
-def write_exif(path_in, path_out, lat, lon, alt=None, direction=None):
-    im = Image.open(path_in)
+def write_exif_jpeg_bytes(jpeg_bytes, lat, lon, alt=None, direction=None):
+    # Write exif to JPEG bytes; returns new JPEG bytes
+    open("tmp_in.jpg","wb").write(jpeg_bytes)
     try:
-        exif_dict = piexif.load(im.info.get("exif", b""))
-    except Exception:
-        exif_dict = {"0th":{}, "Exif":{}, "GPS":{}, "1st":{}}
-    exif_dict["GPS"] = exif_gps(lat, lon, alt, direction)
-    exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
-    exif_bytes = piexif.dump(exif_dict)
-    im.save(path_out, "jpeg", exif=exif_bytes, quality=95)
+        im = Image.open("tmp_in.jpg")
+        try:
+            exif_dict = piexif.load(im.info.get("exif", b""))
+        except Exception:
+            exif_dict = {"0th":{}, "Exif":{}, "GPS":{}, "1st":{}}
+        exif_dict["GPS"] = exif_gps(lat, lon, alt, direction)
+        exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
+        exif_bytes = piexif.dump(exif_dict)
+        im.save("tmp_out.jpg", "jpeg", exif=exif_bytes, quality=95)
+        return open("tmp_out.jpg","rb").read()
+    finally:
+        try: os.remove("tmp_in.jpg")
+        except: pass
+        try: os.remove("tmp_out.jpg")
+        except: pass
 
 def parse_float_maybe_comma(v):
     if v is None: return None
@@ -157,13 +174,13 @@ def build_new_name(pattern, label, orig_name, E=None, N=None):
     base, ext = os.path.splitext(orig_name)
     safe_label = sanitize_for_filename(label)
     if pattern == "keep" or not safe_label: return orig_name
-    if pattern == "label_orig": return f"{safe_label}_{base}{ext}"
-    if pattern == "label_only": return f"{safe_label}{ext}"
+    if pattern == "label_orig": return f"{safe_label}_{base}.jpg"
+    if pattern == "label_only": return f"{safe_label}.jpg"
     if pattern == "label_en":
         e_txt = f"{int(round(E))}" if E is not None else "E"
         n_txt = f"{int(round(N))}" if N is not None else "N"
-        return f"{safe_label}_{e_txt}_{n_txt}{ext}"
-    return orig_name
+        return f"{safe_label}_{e_txt}_{n_txt}.jpg"
+    return f"{base}.jpg"
 
 def detect_columns(df):
     low = {c.lower(): c for c in df.columns}
@@ -204,8 +221,7 @@ def base_id(s, delims="-_ ./"):
     m = re.match(r'^([A-ZÆØÅ0-9]+?)(?:\s*(?:HJ(?:ØRNE)?|H|C)?\s*\d+)?$', s.upper())
     return m.group(1) if m else s.upper()
 
-# ====== Lines: GeoJSON + LandXML ======
-
+# ====== Lines ======
 def _parse_numbers_list(txt):
     if not txt: return []
     parts = txt.strip().replace(",", " ").split()
@@ -309,19 +325,18 @@ def nearest_heading_on_polyline(coords, pt):
         nx = x1 + t*vx; ny = y1 + t*vy
         dist = ((px-nx)**2 + (py-ny)**2)**0.5
         if dist < best[1]:
-            az = (math.degrees(math.atan2(vx, vy)) + 360.0) % 360.0  # 0°=N
+            az = (math.degrees(math.atan2(vx, vy)) + 360.0) % 360.0
             best = (az, dist, (nx,ny))
     return best
 
-# ===================== Sidebar: Global Project Data =====================
+# ===================== Sidebar (global project) =====================
 
-st.title("Geotagging bilder v10")
-st.caption("Globalt prosjektoppsett i sidepanelet • Linje-heading i alle faner • Auto-180 • S_HYPERLINK • Kum-senter • Kart og korrektur")
+st.title("Geotagging bilder v10.2")
+st.caption("Globalt prosjektoppsett • Linje-heading overalt • Auto-180 • HEIC/PNG/TIF → JPEG • S_HYPERLINK • Kum-senter • Kart")
 
 with st.sidebar:
     st.header("Prosjektdata (gjelder alle faner)")
 
-    # Points file
     st.subheader("Punkter / Kummer")
     pts_mode = st.radio("Innhold:", ["Hjørner (beregn senter)", "Senterpunkter (direkte E/N)"], index=0, key="SB_pts_mode", horizontal=True)
     pts_up = st.file_uploader("Excel/CSV for ALLE kummer (S_OBJID, Øst, Nord, (Høyde), (Rotasjon))", type=["xlsx","xls","csv"], key="SB_pts")
@@ -375,11 +390,9 @@ with st.sidebar:
                             st.dataframe(centers_df.head(30), use_container_width=True)
                             centers_dict = {r["base_id"]: r for _, r in centers_df.iterrows()}
                 else:
-                    # direct centers
                     show_cols = [c for c in [cols["sobj"], cols["east"], cols["north"], cols["alt"], cols["rot"]] if c]
                     st.success(f"Fant {len(points_df)} senterpunkter.")
                     st.dataframe(points_df[show_cols].head(30), use_container_width=True)
-                    # fabricate centers_dict
                     centers_dict = {}
                     if cols["sobj"]:
                         for _, r in points_df.iterrows():
@@ -395,7 +408,6 @@ with st.sidebar:
         except Exception as e:
             st.exception(e)
 
-    # Lines
     st.subheader("Linjer (VA/EL)")
     lines_up = st.file_uploader("Linjer (GeoJSON eller XML/LandXML)", type=["geojson","json","xml","landxml"], key="SB_lines")
     objtype_field = st.text_input("Objekttype-felt i linjefil (valgfritt)", value="objtype", key="SB_objfield")
@@ -413,13 +425,11 @@ with st.sidebar:
         except Exception as e:
             st.exception(e)
 
-    # Global options
     st.subheader("Globale valg")
     draw_arrow_global = st.checkbox("Tegn nordpil på bilder", value=True, key="SB_draw_arrow")
     arrow_size_global = st.slider("Pil-størrelse (px)", 60, 240, 120, key="SB_arrow_size")
     auto_180 = st.checkbox("Auto-180 (flipp heading hvis ~180° fra senter/rotasjon)", value=True, key="SB_auto180")
 
-    # Save to session
     st.session_state["POINTS_EPSG"] = epsg_pts
     st.session_state["LINES_EPSG"] = epsg_lines
     st.session_state["BUFFER_M"] = buffer_m
@@ -431,7 +441,7 @@ with st.sidebar:
     st.session_state["POINTS_DF"] = points_df
     st.session_state["LINES_LIST"] = lines_list
 
-# ===================== Heading & position chooser =====================
+# ===================== Core orientation =====================
 
 def heading_from_lines(E, N):
     lines = st.session_state.get("LINES_LIST")
@@ -440,7 +450,6 @@ def heading_from_lines(E, N):
     buf = st.session_state.get("BUFFER_M", 2.0)
     if not lines: 
         return None, None
-    # Reproject lines to point CRS if needed (do a shallow copy to avoid mutating original repeatedly)
     if epsg_lin != epsg_pts:
         tr = Transformer.from_crs(epsg_lin, epsg_pts, always_xy=True)
         def reproject_coords(coords):
@@ -460,7 +469,6 @@ def heading_from_lines(E, N):
     return (hd if dist <= buf else None), dist
 
 def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None):
-    # Position priority: provided E/N -> center of sobj
     centers = st.session_state.get("CENTERS_DICT") or {}
     epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
 
@@ -473,18 +481,14 @@ def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None):
             if Alt is None: Alt = info.get("hoyde")
             center_hint = info.get("azimut")
 
-    # Heading priority: line heading -> center azimut -> Rot
     line_h, dist = heading_from_lines(E, N) if (E is not None and N is not None) else (None, None)
     hd = line_h if _is_valid_number(line_h) else (center_hint if _is_valid_number(center_hint) else (Rot if _is_valid_number(Rot) else None))
 
-    # Auto-180 check
     if st.session_state.get("AUTO_180", True):
-        # if both line_h and center_hint are present and ~180 apart, flip line
         if _is_valid_number(line_h) and _is_valid_number(center_hint):
             d = ang_diff(line_h, center_hint)
             if d is not None and 150 <= d <= 210:
                 hd = (line_h + 180) % 360
-        # else if line missing, but Rot and center exist and ~180, flip Rot
         elif not _is_valid_number(line_h) and _is_valid_number(Rot) and _is_valid_number(center_hint):
             d = ang_diff(Rot, center_hint)
             if d is not None and 150 <= d <= 210:
@@ -494,265 +498,138 @@ def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None):
 
 # ===================== Tabs =====================
 
-tabA, tabB, tabD = st.tabs(["A) Batch geotagg", "B) CSV-mapping", "D) Korrektur + kart"])
+tabA = st.tabs(["A) Batch geotagg"])[0]
 
-# ---------- Tab A: multi images with global project data ----------
 with tabA:
     st.subheader("A) Geotagg mange bilder (bruk prosjektdata fra sidepanelet)")
-    # Pick a kum/S_OBJID from centers
-    centers_df = st.session_state.get("CENTERS_DF")
     centers_dict = st.session_state.get("CENTERS_DICT") or {}
+    epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
+    draw_arrow = st.session_state.get("DRAW_ARROW", True)
+    arrow_size = st.session_state.get("ARROW_SIZE", 120)
+
     picked_label = None
     if centers_dict:
         options = sorted(list(centers_dict.keys()))
-        picked_label = st.selectbox("Velg kum/S_OBJID (for å bruke kum-senter + heading-hint):", options, key="A_pick_label")
+        picked_label = st.selectbox("Velg kum/S_OBJID (bruker kum-senter + heading-hint):", options, key="A_pick_label")
     else:
-        st.info("Ingen kum-senter tilgjengelig ennå. Last opp punkter i sidepanelet.")
+        st.warning("Ingen kum-senter i prosjektdata ennå. Last opp punkter (hjørner/senter) i sidepanelet.")
 
-    mode = st.radio("Bildekilde:", ["Lokal mappe", "ZIP-opplasting", "Opplasting (flere filer)"], index=2, key="A_mode")
-    colA1, colA2 = st.columns(2)
-    with colA1:
-        if mode == "Lokal mappe":
-            rootA = st.text_input("Aktiv mappe (lokal sti)", value="", key="A_root")
-            outA = st.text_input("Ut-mappe (kopi; tom = overskriv i aktiv mappe)", value="", key="A_out")
-            overwriteA = st.checkbox("Overskriv originaler (forsiktig)", value=False, key="A_overwrite")
-        elif mode == "ZIP-opplasting":
-            zip_up = st.file_uploader("Last opp ZIP med JPG-bilder", type=["zip"], key="A_zip")
-        else:
-            files_up = st.file_uploader("Dra og slipp mange JPG", type=["jpg","jpeg"], accept_multiple_files=True, key="A_files")
+    mode = st.radio("Bildekilde:", ["ZIP-opplasting", "Opplasting (flere filer)"], index=1, key="A_mode")
+    rename_pattern_A = st.selectbox("Nytt filnavn (mønster)", [
+        "Behold originalt navn","S_OBJID + originalt navn","Kun S_OBJID","S_OBJID + avrundet E/N"
+    ], index=1, key="A_rename")
+    epsg_out = ensure_epsg("TAB_A_DOC_EPSG", "Dokumentasjons-CRS for CSV (eksport)", default=25832)
 
-        rename_pattern_A = st.selectbox("Nytt filnavn (mønster)", [
-            "Behold originalt navn","S_OBJID + originalt navn","Kun S_OBJID","S_OBJID + avrundet E/N"
-        ], index=1, key="A_rename")
+    exts_ok = (".jpg",".jpeg",".png",".tif",".tiff",".heic",".heif")
+    if not HEIC_OK:
+        st.info("HEIC/HEIF krever pakken 'pillow-heif'. Kjør: pip install pillow-heif")
 
-    with colA2:
-        draw_arrow = st.session_state.get("DRAW_ARROW", True)
-        arrow_size = st.session_state.get("ARROW_SIZE", 120)
-        epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
-        epsg_out = ensure_epsg("TAB_A_DOC_EPSG", "Dokumentasjons-CRS for CSV (eksport)", default=25832)
+    def load_any_to_jpeg_bytes(payload: bytes) -> bytes:
+        im = Image.open(io.BytesIO(payload))
+        im = normalize_orientation(im).convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, "jpeg", quality=95)
+        return buf.getvalue()
 
     patt_map = {"Behold originalt navn":"keep","S_OBJID + originalt navn":"label_orig","Kun S_OBJID":"label_only","S_OBJID + avrundet E/N":"label_en"}
     patt = patt_map[rename_pattern_A]
 
     if st.button("Kjør geotag (Tab A)", key="A_run"):
         try:
-            rows_out = []
-            if mode == "Lokal mappe":
-                if not rootA or not os.path.isdir(rootA): st.error("Aktiv mappe finnes ikke.")
-                else:
-                    out_dir = rootA if (overwriteA or not outA) else outA
-                    if not overwriteA and outA: os.makedirs(outA, exist_ok=True)
-                    jpgs = sorted(glob.glob(os.path.join(rootA, "*.jpg")) + glob.glob(os.path.join(rootA, "*.JPG")))
-                    for p in jpgs:
-                        fname=os.path.basename(p)
-                        E=N=Alt=Rot=None
-                        sobj = picked_label or None
-                        E,N,Alt,hd,cent_hint,line_h,dist = choose_pos_and_heading(sobj, E,N, Alt, Rot)
-                        if E is None or N is None:
-                            st.warning(f"Hopper {fname} (mangler posisjon)."); continue
-                        lat,lon = transform_EN_to_wgs84(E,N, epsg_pts)
-                        newname = build_new_name(patt, sobj, fname, E, N)
-                        dst = p if (overwriteA and not outA and newname==fname) else os.path.join(out_dir, newname)
-                        if dst != p:
-                            os.makedirs(os.path.dirname(dst), exist_ok=True)
-                            shutil.copy2(p, dst)
-                        im=Image.open(dst); im=normalize_orientation(im)
-                        if draw_arrow and _is_valid_number(hd): im=draw_north_arrow(im, _wrap_deg(hd), size_px=arrow_size)
-                        im.save(dst, "jpeg", quality=95)
-                        write_exif(dst, dst, lat, lon, Alt, hd)
-                        Xdoc, Ydoc = transform_EN_to_epsg(E, N, epsg_pts, epsg_out)
-                        rows_out.append({
-                            "file": os.path.basename(dst), "S_OBJID": sobj, "E_in": E, "N_in": N, "lat": lat, "lon": lon,
-                            f"E_{epsg_out}": Xdoc, f"N_{epsg_out}": Ydoc, "hoyde": Alt, "heading": hd,
-                            "heading_line": line_h, "center_hint": cent_hint, "dist_to_line": dist
-                        })
-            elif mode == "ZIP-opplasting":
-                if not zip_up: st.error("Last opp ZIP.")
-                else:
-                    zin = zipfile.ZipFile(io.BytesIO(zip_up.read()), "r")
-                    zout_mem = io.BytesIO(); zout = zipfile.ZipFile(zout_mem, "w", zipfile.ZIP_DEFLATED)
-                    used=set()
-                    for name in zin.namelist():
-                        if not name.lower().endswith((".jpg",".jpeg")): continue
-                        sobj = picked_label or None
-                        E=N=Alt=Rot=None
-                        E,N,Alt,hd,cent_hint,line_h,dist = choose_pos_and_heading(sobj, E,N, Alt, Rot)
-                        if E is None or N is None:
-                            continue
-                        lat,lon = transform_EN_to_wgs84(E,N, epsg_pts)
-                        payload = zin.read(name)
-                        im = Image.open(io.BytesIO(payload)); im=normalize_orientation(im)
-                        if draw_arrow and _is_valid_number(hd): im=draw_north_arrow(im, _wrap_deg(hd), size_px=arrow_size)
-                        out_io=io.BytesIO(); im.save(out_io, "jpeg", quality=95); out_io.seek(0)
-                        tmp=out_io.getvalue(); open("tmp.jpg","wb").write(tmp)
-                        write_exif("tmp.jpg", "tmp.jpg", lat, lon, Alt, hd)
-                        final=open("tmp.jpg","rb").read()
-                        newname=build_new_name(patt, sobj, os.path.basename(name), E, N)
-                        base,ext=os.path.splitext(newname); i=1; cand=newname
-                        while cand in used:
-                            cand=f"{base}_{i}{ext}"; i+=1
-                        used.add(cand)
-                        zout.writestr(cand, final)
-                        Xdoc, Ydoc = transform_EN_to_epsg(E, N, epsg_pts, epsg_out)
-                        rows_out.append({"file": cand, "S_OBJID": sobj, "E_in": E, "N_in": N, "lat": lat, "lon": lon,
-                                         f"E_{epsg_out}": Xdoc, f"N_{epsg_out}": Ydoc, "hoyde": Alt, "heading": hd,
-                                         "heading_line": line_h, "center_hint": cent_hint, "dist_to_line": dist})
-                    zout.close(); st.download_button("Last ned geotagget ZIP", data=zout_mem.getvalue(), file_name="geotagged.zip", mime="application/zip")
+            if not picked_label or picked_label not in centers_dict:
+                st.error("Velg en kum/S_OBJID i listen. (Last opp punkter i sidepanelet først.)")
             else:
-                files_up = st.session_state.get("A_files") or st.session_state.get("A_files_dummy")
-                # read directly from uploader widget
-                files_up = st.session_state.get("uploaded_files", None)
-                # Simpler: use the widget variable
-                files_up = st.session_state.get("A_files")
-                # but Streamlit stores in the widget; we access through key provided in uploader. We'll handle inline below:
+                info = centers_dict[picked_label]
+                E0 = info.get("center_E"); N0 = info.get("center_N")
+                Alt0 = info.get("hoyde")
+                if E0 is None or N0 is None:
+                    st.error(f"Kum '{picked_label}' mangler E/N. Kontroller punktfilen i sidepanelet.")
+                else:
+                    processed = []; skipped = []
 
-            # For the simple case (multiple files upload) handle inline due to Streamlit limitations:
-            if st.session_state.get("A_mode") == "Opplasting (flere filer)":
-                files_up_w = st.session_state.get("A_files")
-                if files_up_w:
-                    zout_mem=io.BytesIO(); zout=zipfile.ZipFile(zout_mem,"w",zipfile.ZIP_DEFLATED)
-                    used=set()
-                    for f in files_up_w:
-                        name = f.name
-                        sobj = picked_label or None
-                        E=N=Alt=Rot=None
-                        E,N,Alt,hd,cent_hint,line_h,dist = choose_pos_and_heading(sobj, E,N, Alt, Rot)
-                        if E is None or N is None: 
-                            continue
-                        lat, lon = transform_EN_to_wgs84(E,N, epsg_pts)
-                        im=Image.open(f); im=normalize_orientation(im)
-                        if draw_arrow and _is_valid_number(hd): im=draw_north_arrow(im, _wrap_deg(hd), size_px=arrow_size)
-                        out_io=io.BytesIO(); im.save(out_io, "jpeg", quality=95); out_io.seek(0)
-                        tmp=out_io.getvalue(); open("tmp.jpg","wb").write(tmp)
-                        write_exif("tmp.jpg", "tmp.jpg", lat, lon, Alt, hd)
-                        final=open("tmp.jpg","rb").read()
-                        newname=build_new_name(patt, sobj, os.path.basename(name), E, N)
-                        base,ext=os.path.splitext(newname); i=1; cand=newname
-                        while cand in used:
-                            cand=f"{base}_{i}{ext}"; i+=1
-                        used.add(cand)
-                        zout.writestr(cand, final)
+                    def process_one(name: str, payload: bytes):
+                        if not name.lower().endswith(exts_ok):
+                            skipped.append({"file": name, "reason": "Ikke-støttet filtype"}); return None
+                        try:
+                            jpeg0 = load_any_to_jpeg_bytes(payload)
+                        except Exception as e:
+                            skipped.append({"file": name, "reason": f"Kunne ikke lese bilde: {e}"}); return None
+                        E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label, E0,N0, Alt0, None)
+                        if E is None or N is None:
+                            skipped.append({"file": name, "reason": "Mangler E/N (ingen kum-senter)"}); return None
+                        lat, lon = transform_EN_to_wgs84(E, N, epsg_pts)
+                        # Tegn pil
+                        im = Image.open(io.BytesIO(jpeg0))
+                        if draw_arrow and _is_valid_number(hd):
+                            im = draw_north_arrow(im, _wrap_deg(hd), size_px=arrow_size)
+                        buf = io.BytesIO(); im.save(buf, "jpeg", quality=95); buf.seek(0)
+                        jpeg1 = write_exif_jpeg_bytes(buf.getvalue(), lat, lon, Alt, hd)
                         Xdoc, Ydoc = transform_EN_to_epsg(E, N, epsg_pts, epsg_out)
-                        rows_out.append({"file": cand, "S_OBJID": sobj, "E_in": E, "N_in": N, "lat": lat, "lon": lon,
-                                         f"E_{epsg_out}": Xdoc, f"N_{epsg_out}": Ydoc, "hoyde": Alt, "heading": hd,
-                                         "heading_line": line_h, "center_hint": cent_hint, "dist_to_line": dist})
-                    zout.close(); st.download_button("Last ned ZIP med geotaggede bilder", data=zout_mem.getvalue(), file_name="geotagged_upload.zip", mime="application/zip")
+                        processed.append({"file": name, "S_OBJID": picked_label, "E_in": E, "N_in": N,
+                                          "lat": lat, "lon": lon, f"E_{epsg_out}": Xdoc, f"N_{epsg_out}": Ydoc,
+                                          "hoyde": Alt, "heading": hd, "heading_line": line_h,
+                                          "center_hint": cent, "dist_to_line": dist})
+                        return jpeg1
 
-            if rows_out:
-                dfo=pd.DataFrame(rows_out)
-                st.success(f"Geotagget {len(dfo)} bilder.")
-                st.download_button("Last ned CSV (Tab A)", dfo.to_csv(index=False).encode("utf-8"), "geotag_tabA.csv", "text/csv")
+                    if mode == "ZIP-opplasting":
+                        zip_up = st.file_uploader("Last opp ZIP med bilder", type=["zip"], key="A_zip2")
+                        if not zip_up:
+                            st.error("Last opp ZIP.")
+                        else:
+                            zin = zipfile.ZipFile(io.BytesIO(zip_up.read()), "r")
+                            zout_mem = io.BytesIO(); zout = zipfile.ZipFile(zout_mem, "w", zipfile.ZIP_DEFLATED)
+                            used=set(); written=0
+                            for name in zin.namelist():
+                                if not name.lower().endswith(exts_ok): 
+                                    continue
+                                payload = zin.read(name)
+                                final = process_one(os.path.basename(name), payload)
+                                if final is None: continue
+                                newname=build_new_name(patt, picked_label, os.path.basename(name), E0, N0)
+                                base,ext=os.path.splitext(newname); i=1; cand=newname
+                                while cand in used:
+                                    cand=f"{base}_{i}.jpg"; i+=1
+                                used.add(cand)
+                                zout.writestr(cand, final); written += 1
+                            zout.close()
+                            if written > 0:
+                                st.download_button("Last ned geotagget ZIP", data=zout_mem.getvalue(), file_name="geotagged.zip", mime="application/zip")
+                                st.success(f"Geotagget {written} bilder.")
+                            else:
+                                st.error("Ingen bilder skrevet til ZIP (0). Kontroller at ZIP inneholder støttede formater og at kum er valgt.")
+
+                    else:  # multiple files
+                        files_up = st.file_uploader("Dra inn flere bilder", type=[e[1:] for e in exts_ok], accept_multiple_files=True, key="A_files2")
+                        if not files_up or len(files_up)==0:
+                            st.error("Dra inn bilder (JPG/PNG/TIF/HEIC).")
+                        else:
+                            zout_mem=io.BytesIO(); zout=zipfile.ZipFile(zout_mem,"w",zipfile.ZIP_DEFLATED)
+                            used=set(); written=0
+                            for f in files_up:
+                                payload = f.read()
+                                final = process_one(f.name, payload)
+                                if final is None: continue
+                                newname=build_new_name(patt, picked_label, os.path.basename(f.name), E0, N0)
+                                base,ext=os.path.splitext(newname); i=1; cand=newname
+                                while cand in used:
+                                    cand=f"{base}_{i}.jpg"; i+=1
+                                used.add(cand)
+                                zout.writestr(cand, final); written += 1
+                            zout.close()
+                            if written > 0:
+                                st.download_button("Last ned ZIP med geotaggede bilder", data=zout_mem.getvalue(), file_name="geotagged_upload.zip", mime="application/zip")
+                                st.success(f"Geotagget {written} bilder.")
+                            else:
+                                st.error("Ingen bilder skrevet (0). Sjekk filtypene og kum-valget.")
+
+                    if processed:
+                        dfo=pd.DataFrame(processed)
+                        st.download_button("Last ned CSV (Tab A)", dfo.to_csv(index=False).encode("utf-8"), "geotag_tabA.csv", "text/csv")
+                    else:
+                        st.warning("Ingen bilder ble prosessert.")
+                    if 'skipped' in locals() and skipped:
+                        st.warning("Hoppet over:")
+                        st.dataframe(pd.DataFrame(skipped))
+
         except Exception as e:
             st.exception(e)
-
-# ---------- Tab B: CSV-mapping (uses same global project data + arrow) ----------
-with tabB:
-    st.subheader("B) CSV/Excel-mapping (inkl. S_HYPERLINK) – bruker linjer/senter fra sidepanelet")
-    root = st.text_input("Root-mappe for bilder (lokal sti)", value="", key="B_root")
-    up = st.file_uploader("Mapping-CSV/Excel (kan ha S_HYPERLINK)", type=["csv","xlsx","xls"], key="B_csv")
-    out_root = st.text_input("Ut-root (kopi; tom = overskriv)", value="", key="B_out")
-    overwrite2 = st.checkbox("Overskriv originale", value=False, key="B_overwrite")
-    rename_pattern_B = st.selectbox("Nytt filnavn", [
-        "Behold originalt navn","S_OBJID + originalt navn","Kun S_OBJID","S_OBJID + avrundet E/N"
-    ], index=1, key="B_rename")
-    draw_arrow_B = st.checkbox("Tegn nordpil (bruker globale innstillinger)", value=True, key="B_arrow")
-    arrow_size_B = st.session_state.get("ARROW_SIZE", 120)
-    epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
-    epsg_out_doc2 = ensure_epsg("TAB_B_DOC_EPSG", "Dokumentasjons-CRS for CSV (kun eksport)", default=25832)
-
-    runB = st.button("Kjør geotag (Tab B)", key="B_run")
-    if runB:
-        try:
-            if not root or not os.path.isdir(root):
-                st.error("Root finnes ikke.")
-            elif not up:
-                st.error("Last opp CSV/Excel.")
-            else:
-                dfm = dataframe_from_upload(up)
-                cols = detect_columns(dfm)
-                if cols["hyper"] and cols["hyper"] in dfm.columns:
-                    dfm = expand_hyperlinks(dfm, cols["hyper"]); cols["file"] = "file"
-                if not cols["file"]:
-                    st.error("Mangler 'file' eller S_HYPERLINK.")
-                else:
-                    rows = []
-                    patt_map = {"Behold originalt navn":"keep","S_OBJID + originalt navn":"label_orig","Kun S_OBJID":"label_only","S_OBJID + avrundet E/N":"label_en"}
-                    patt = patt_map[rename_pattern_B]
-                    for _, r in dfm.dropna(subset=[cols["file"]]).iterrows():
-                        sobj = str(r[cols["sobj"]]) if cols["sobj"] else None
-                        # take E/N if present in mapping, else from center for sobj
-                        E = parse_float_maybe_comma(r[cols["east"]]) if cols["east"] in dfm.columns else None
-                        N = parse_float_maybe_comma(r[cols["north"]]) if cols["north"] in dfm.columns else None
-                        Alt = parse_float_maybe_comma(r[cols["alt"]]) if cols["alt"] in dfm.columns else None
-                        Rot = parse_float_maybe_comma(r[cols["rot"]]) if cols["rot"] in dfm.columns else None
-                        E,N,Alt,hd,cent_hint,line_h,dist = choose_pos_and_heading(sobj, E,N, Alt, Rot)
-                        if E is None or N is None: 
-                            st.warning(f"Hopper '{r[cols['file']]}' (mangler posisjon)."); continue
-                        p = os.path.join(root, str(r[cols["file"]]))
-                        if not os.path.isfile(p): st.warning(f"Mangler fil: {p}"); continue
-                        lat, lon = transform_EN_to_wgs84(E,N, epsg_pts)
-                        newname = build_new_name(patt, sobj, os.path.basename(p), E, N)
-                        dst = p if overwrite2 else os.path.join(out_root or os.path.dirname(p), newname)
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        if dst != p: shutil.copy2(p, dst)
-                        im = Image.open(dst); im = normalize_orientation(im)
-                        if draw_arrow_B and st.session_state.get("DRAW_ARROW", True) and _is_valid_number(hd):
-                            im = draw_north_arrow(im, _wrap_deg(hd), size_px=arrow_size_B)
-                        im.save(dst, "jpeg", quality=95)
-                        write_exif(dst, dst, lat, lon, Alt, hd)
-                        Xdoc, Ydoc = transform_EN_to_epsg(E, N, epsg_pts, epsg_out_doc2)
-                        rows.append({"file": os.path.relpath(dst, out_root) if out_root else os.path.basename(dst),
-                                     "S_OBJID": sobj, "E_in": E, "N_in": N, "lat": lat, "lon": lon,
-                                     f"E_{epsg_out_doc2}": Xdoc, f"N_{epsg_out_doc2}": Ydoc,
-                                     "hoyde": Alt, "heading": hd, "heading_line": line_h, "center_hint": cent_hint, "dist_to_line": dist})
-                    dfr=pd.DataFrame(rows); st.success(f"Geotagget {len(dfr)} bilder.")
-                    st.download_button("Last ned CSV (Tab B)", dfr.to_csv(index=False).encode("utf-8"), "geotag_tabB.csv", "text/csv")
-        except Exception as e:
-            st.exception(e)
-
-# ---------- Tab D: correction + map (uses global table produced by A/B) ----------
-with tabD:
-    st.subheader("D) Korrektur + kart")
-    st.markdown("Kjør først A/B for å generere en tabell i minnet – deretter kan du korrigere heading og skrive EXIF på nytt.")
-
-    if "LAST_RUN_TABLE" not in st.session_state:
-        st.session_state["LAST_RUN_TABLE"] = None
-
-    # If A/B just ran, store/refresh table
-    # (We add a small button for 'Hent siste resultat fra Tab A/B' – user clicks after A/B)
-    if st.button("Hent siste resultat fra Tab A/B", key="D_get"):
-        # No direct pipeline here; A/B already produce CSV download. For in-memory, we skip.
-        st.info("I denne lette versjonen lastes ikke tabellen automatisk. (Kan utvides til full minnelagring ved behov.)")
-
-    # Minimal map from current centers + lines to validate project data:
-    try:
-        import pydeck as pdk
-        centers_df = st.session_state.get("CENTERS_DF")
-        lines = st.session_state.get("LINES_LIST")
-        epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
-        epsg_lin = st.session_state.get("LINES_EPSG", 25832)
-        layers = []
-        if centers_df is not None and not centers_df.empty:
-            tr_pts = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
-            tmp = centers_df.copy()
-            tmp["lon"], tmp["lat"] = zip(*[tr_pts.transform(e, n) for e,n in zip(tmp["center_E"], tmp["center_N"])])
-            tmp["color"] = [ [0,150,255] ] * len(tmp)
-            layers.append(pdk.Layer("ScatterplotLayer", tmp, get_position='[lon, lat]', get_radius=4, get_fill_color='color', pickable=True))
-            view_state = pdk.ViewState(latitude=float(tmp["lat"].mean()), longitude=float(tmp["lon"].mean()), zoom=16)
-        else:
-            view_state = pdk.ViewState(latitude=59.91, longitude=10.75, zoom=10)
-
-        if lines:
-            if epsg_lin != 4326:
-                tr_lin = Transformer.from_crs(epsg_lin, 4326, always_xy=True)
-                def to_wgs_path(coords): return [[*tr_lin.transform(x,y)][::-1][::-1] and [tr_lin.transform(x,y)[0], tr_lin.transform(x,y)[1]] for (x,y) in coords]
-            else:
-                def to_wgs_path(coords): return [[x,y] for (x,y) in coords]
-            paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
-            layers.append(pdk.Layer("PathLayer", paths, get_path="path", get_width=2, get_color=[80,80,200]))
-        st.pydeck_chart(pdk.Deck(map_style=None, layers=layers, initial_view_state=view_state), use_container_width=True)
-    except Exception as e:
-        st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
-
-st.markdown("---")
-st.caption("v10 • Global sidebar (punkter/linjer) • heading fra linjer overalt • auto-180 • S_OBJID-prefiks • EXIF WGS84 • nordpil")
