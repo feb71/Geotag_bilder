@@ -5,8 +5,9 @@ import pandas as pd
 from PIL import Image, ImageOps, ImageDraw
 import piexif
 from pyproj import Transformer, CRS
+from streamlit_image_coordinates import streamlit_image_coordinates as img_coords
 
-# HEIC support (optional)
+# HEIC/HEIF support (optional)
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
@@ -14,9 +15,9 @@ try:
 except Exception:
     HEIC_OK = False
 
-st.set_page_config(page_title="Geotagging bilder v10.8", layout="wide")
-st.title("Geotagging bilder v10.8")
-st.caption("Punkter/linjer → heading, nordpil i bilde + EXIF, manuell pr. bilde, kart, CRS-verktøy")
+st.set_page_config(page_title="Geotagging bilder v11.0", layout="wide")
+st.title("Geotagging bilder v11.0")
+st.caption("Punkter/linjer → geotag + heading + nordpil (EXIF), manuell pr. bilde, to-klikk-orientering fra hjørner, kart, CRS-verktøy")
 
 # ---------- helpers ----------
 def deg_to_dms_rational(dd):
@@ -225,7 +226,6 @@ def load_lines_landxml(file_obj):
     for cg in root.iter():
         if not cg.tag.endswith("CoordGeom"): continue
         objtype_val = None
-        # crude search for feature props nearby
         pf = None
         for anc in root.iter():
             if anc.tag.endswith("PlanFeature") and cg in list(anc):
@@ -522,7 +522,7 @@ def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None, 
     return E, N, Alt, (_wrap_deg(hd) if _is_valid_number(hd) else None), center_hint, line_h, dist
 
 # ---------- Tabs ----------
-tabA, tabC, tabD = st.tabs(["A) Batch geotagg", "C) Manuell pr. bilde", "D) Kart"])
+tabA, tabC, tabD = st.tabs(["A) Batch geotagg", "C) Manuell + 2-klikk", "D) Kart"])
 
 with tabA:
     st.subheader("A) Geotagg mange bilder")
@@ -583,36 +583,33 @@ with tabA:
                 if E0 is None or N0 is None:
                     st.error(f"Kum '{picked_label}' mangler E/N.")
                 else:
-                    processed=[]; skipped=[]; written=0
-                    manual_val = float(man_heading) if man_enable else None
+                    processed=[]; skipped=[]
                     zout_mem = io.BytesIO(); zout = zipfile.ZipFile(zout_mem, "w", zipfile.ZIP_DEFLATED)
-                    used=set()
+                    used=set(); counter={"n":0}
                     def process_one(name, payload):
-                        nonlocal written
                         name = str(name)
                         if not name.lower().endswith(exts_ok): 
                             skipped.append({"file": name, "reason":"Ikke-støttet filtype"}); return
                         try: jpeg0 = load_any_to_jpeg_bytes(payload)
                         except Exception as e:
                             skipped.append({"file": name, "reason": f"Kunne ikke lese bilde: {e}"}); return
-                        E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label, E0,N0, Alt0, None, manual_override=manual_val)
+                        E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label, E0,N0, Alt0, None, manual_override=(float(man_heading) if man_enable else None))
                         if E is None or N is None:
                             skipped.append({"file": name, "reason":"Mangler E/N"}); return
                         lat, lon = transform_EN_to_wgs84(E, N, epsg_pts)
                         im = Image.open(io.BytesIO(jpeg0))
-                        if draw_arrow and (_is_valid_number(hd) or _is_valid_number(manual_val)):
-                            use_hd = hd if _is_valid_number(hd) else manual_val
+                        use_hd = hd if _is_valid_number(hd) else (float(man_heading) if man_enable else None)
+                        if draw_arrow and _is_valid_number(use_hd):
                             im = draw_north_arrow(im, _wrap_deg(use_hd), size_px=arrow_size, color=st.session_state.get("ARROW_COLOR",(255,255,255)), outline=st.session_state.get("ARROW_OUTLINE",(0,0,0)))
                         buf = io.BytesIO(); im.save(buf,"jpeg", quality=95); buf.seek(0)
-                        jpeg1 = write_exif_jpeg_bytes(buf.getvalue(), lat, lon, Alt, (hd if _is_valid_number(hd) else manual_val))
+                        jpeg1 = write_exif_jpeg_bytes(buf.getvalue(), lat, lon, Alt, use_hd)
                         Xdoc,Ydoc = transform_EN_to_epsg(E,N, epsg_pts, epsg_out)
 
-                        # heading_source (robust og lesbart)
                         if _is_valid_number(line_h):
                             heading_source = "linje"
                         elif _is_valid_number(cent):
                             heading_source = "kum-azimut"
-                        elif _is_valid_number(manual_val):
+                        elif _is_valid_number(use_hd):
                             heading_source = "manuell"
                         else:
                             heading_source = "ukjent"
@@ -624,7 +621,7 @@ with tabA:
                             "lat": lat, "lon": lon,
                             f"E_{epsg_out}": Xdoc, f"N_{epsg_out}": Ydoc,
                             "hoyde": Alt,
-                            "heading": (hd if _is_valid_number(hd) else manual_val),
+                            "heading": use_hd,
                             "heading_line": line_h,
                             "center_hint": cent,
                             "dist_to_line": dist,
@@ -633,7 +630,7 @@ with tabA:
                         newname = build_new_name(patt, picked_label, os.path.basename(name), E0, N0)
                         base,ext=os.path.splitext(newname); cand=newname; i=1
                         while cand in used: cand=f"{base}_{i}.jpg"; i+=1
-                        used.add(cand); zout.writestr(cand, jpeg1); counter['n']+=1
+                        used.add(cand); zout.writestr(cand, jpeg1); counter["n"]+=1
 
                     if mode=="ZIP-opplasting":
                         if not zip_up: st.error("Last opp ZIP.")
@@ -648,7 +645,7 @@ with tabA:
                             for f in files_up: process_one(f.name, f.read())
 
                     zout.close()
-                    if counter['n']>0:
+                    if counter["n"]>0:
                         st.download_button("Last ned ZIP", data=zout_mem.getvalue(), file_name="geotagged.zip", mime="application/zip")
                         st.success(f"Geotagget {counter['n']} bilder.")
                     else:
@@ -665,7 +662,7 @@ with tabA:
             st.exception(e)
 
 with tabC:
-    st.subheader("C) Manuell pr. bilde – forhåndsvisning og kart")
+    st.subheader("C) Manuell pr. bilde + to-klikk-orientering")
     centers_dict = st.session_state.get("CENTERS_DICT") or {}
     epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
     draw_arrow = st.session_state.get("DRAW_ARROW", True)
@@ -702,16 +699,70 @@ with tabC:
                 im_prev = im0
             st.image(im_prev, caption=f"Forhåndsvisning – heading={show_hd if show_hd is not None else '—'}°", use_column_width=True)
 
+            # --- 2-klikk orientering ---
+            with st.expander("Orienter med 2 hjørner (klikk i bildet)"):
+                pts_df = st.session_state.get("POINTS_DF")
+                delims_val = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
+                base_lbl = base_id(picked_label_C, delims_val) if picked_label_C else None
+                corners_df = None
+                if pts_df is not None and base_lbl:
+                    cols = detect_columns(pts_df)
+                    if cols["sobj"] and cols["east"] and cols["north"]:
+                        tmp = pts_df.copy()
+                        tmp["_base"] = tmp[cols["sobj"]].astype(str).map(lambda s: base_id(s, delims_val))
+                        grp = tmp[tmp["_base"] == base_lbl]
+                        if len(grp) >= 2:
+                            corners_df = grp.rename(columns={cols["east"]:"E", cols["north"]:"N"})
+                            corners_df = corners_df.reset_index(drop=True)
+
+                if corners_df is None or len(corners_df) < 2:
+                    st.info("Finner ikke minst 2 hjørner for denne kummen i opplastet punktfil.")
+                else:
+                    st.dataframe(corners_df[["E","N"]].head(10), use_container_width=True)
+                    idxA = st.number_input("Indeks hjørne A (radnr 0..)", min_value=0, max_value=len(corners_df)-1, value=0, key="C_cA_idx")
+                    idxB = st.number_input("Indeks hjørne B (radnr 0..)", min_value=0, max_value=len(corners_df)-1, value=min(1, len(corners_df)-1), key="C_cB_idx")
+                    EA = parse_float_maybe_comma(corners_df.loc[idxA, "E"]) if 0 <= idxA < len(corners_df) else None
+                    NA = parse_float_maybe_comma(corners_df.loc[idxA, "N"]) if 0 <= idxA < len(corners_df) else None
+                    EB = parse_float_maybe_comma(corners_df.loc[idxB, "E"]) if 0 <= idxB < len(corners_df) else None
+                    NB = parse_float_maybe_comma(corners_df.loc[idxB, "N"]) if 0 <= idxB < len(corners_df) else None
+                    if _is_valid_number(EA) and _is_valid_number(NA) and _is_valid_number(EB) and _is_valid_number(NB):
+                        st.caption("Klikk først Hjørne A, deretter Hjørne B i bildet:")
+                        click_key = f"C_clicks_{picked_label_C}_{sel}"
+                        coords = img_coords(im0, key=click_key)
+                        if coords:
+                            clicks = st.session_state.get(click_key + "_list", [])
+                            if not clicks or (clicks and (clicks[-1] != (coords['x'], coords['y']))):
+                                clicks.append((coords["x"], coords["y"]))
+                                clicks = clicks[-2:]
+                                st.session_state[click_key + "_list"] = clicks
+                        clicks = st.session_state.get(click_key + "_list", [])
+                        st.write(f"Klikk: {clicks}")
+                        if len(clicks) == 2:
+                            (xA,yA),(xB,yB) = clicks
+                            az_real = (math.degrees(math.atan2(EB - EA, NB - NA)) + 360.0) % 360.0
+                            az_img  = (math.degrees(math.atan2(xB - xA, -(yB - yA))) + 360.0) % 360.0
+                            hd2 = (az_real - az_img) % 360.0
+                            st.success(f"Beregnet heading = {hd2:.1f}° (lagres som manuell)")
+                            st.session_state["MANUAL_HEADINGS"][sel] = float(hd2)
+                            im_prev2 = draw_north_arrow(im0.copy(), _wrap_deg(hd2), size_px=arrow_size, color=arrow_col, outline=arrow_outline)
+                            st.image(im_prev2, caption=f"Forhåndsvisning (2-klikk) = {hd2:.1f}°", use_column_width=True)
+                        if st.button("Nullstill 2-klikk", key="C_clearclicks_btn"):
+                            st.session_state[click_key + "_list"] = []
+                    else:
+                        st.warning("Ugyldige E/N for valgte hjørner.")
+
         with colR:
             st.markdown("**Sett heading for valgt bilde**")
-            if not _is_valid_number(hd): st.info("Ingen heading funnet automatisk – sett manuelt.")
-            man_val = st.slider("Manuell heading (0–359°)", 0, 359, int(cur_manual if _is_valid_number(cur_manual) else int(hd or 0)), key="C_slider")
+            if not _is_valid_number(hd): st.info("Ingen heading funnet automatisk – sett manuelt eller bruk 2-klikk.")
+            cur_manual = st.session_state["MANUAL_HEADINGS"].get(sel)
+            base_val = int(cur_manual if _is_valid_number(cur_manual) else int(hd or 0))
+            man_val = st.slider("Manuell heading (0–359°)", 0, 359, base_val, key="C_slider")
             c1,c2,c3 = st.columns(3)
             if c1.button("−10°", key="C_m10"): man_val = (man_val-10)%360; st.session_state["C_slider"]=man_val
             if c2.button("+10°", key="C_p10"): man_val = (man_val+10)%360; st.session_state["C_slider"]=man_val
             if c3.button("Flip 180°", key="C_flip"): man_val = (man_val+180)%360; st.session_state["C_slider"]=man_val
             if st.button("Lagre heading", key="C_save_one"):
-                man_dict[sel]=float(man_val); st.success(f"Lagret {sel}: {man_val}°")
+                st.session_state["MANUAL_HEADINGS"][sel]=float(man_val); st.success(f"Lagret {sel}: {man_val}°")
 
         st.markdown("---")
         st.markdown("**Kart (kum-senter + heading-vektor for valgt bilde)**")
@@ -766,7 +817,10 @@ with tabC:
                     im0 = Image.open(io.BytesIO(payload)); im0 = normalize_orientation(im0).convert("RGB")
                     info = centers_dict.get(picked_label_C, {})
                     E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
-                    man = man_dict.get(f.name)
+                    man = st.session_state["MANUAL_HEADINGS"].get(f.name)
+                    # Hvis ikke individuell finnes, bruk lagret for valgt 'sel' om samme navn
+                    if man is None and f.name == sel:
+                        man = st.session_state["MANUAL_HEADINGS"].get(sel)
                     E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label_C, E0,N0, Alt0, None, manual_override=man if man is not None else None)
                     if E is None or N is None: skipped.append({"file":f.name,"reason":"Mangler E/N"}); continue
                     lat, lon = transform_EN_to_wgs84(E, N, epsg_pts)
@@ -825,4 +879,4 @@ with tabD:
         st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
 
 st.markdown("---")
-st.caption("v10.8 • CRS-verktøy (swap/scale/offset), kartetiketter, manuell pr. bilde, farger på nordpil, LandXML/GeoJSON, EXIF WGS84")
+st.caption("v11.0 • CRS-verktøy (swap/scale/offset), etiketter, manuell pr. bilde, 2-klikk-orientering, farger på nordpil, LandXML/GeoJSON, EXIF WGS84")
