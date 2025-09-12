@@ -229,16 +229,43 @@ def _parse_numbers_list(txt):
         except: pass
     return vals
 
+
 def load_lines_landxml(file_obj):
     import xml.etree.ElementTree as ET
-    tree = ET.parse(file_obj); root = tree.getroot()
+    import io as _io
+    text = file_obj.read()
+    if isinstance(text, bytes):
+        try:
+            text = text.decode("utf-8")
+        except Exception:
+            text = text.decode("iso-8859-1", errors="ignore")
+    # Strip default namespaces so we can use endswith() checks reliably
+    it = ET.iterparse(_io.StringIO(text))
+    for _, el in it:
+        if '}' in el.tag:
+            el.tag = el.tag.split('}',1)[1]
+    root = it.root
+
+    def _parse_numbers_list(txt):
+        if not txt: return []
+        parts = str(txt).strip().replace(",", " ").split()
+        vals = []
+        for p in parts:
+            try: vals.append(float(p))
+            except: pass
+        return vals
+
+    # 1) Gather points by name (if any)
     pnt_by_name = {}
     for p in root.iter():
         if p.tag.endswith("Pnt") and p.get("name"):
             nums = _parse_numbers_list(p.text or "")
             if len(nums) >= 2:
                 pnt_by_name[p.get("name")] = (nums[0], nums[1])
+
     lines = []
+
+    # 2) Global PntList2D/3D blocks (polylines)
     for tag in ["PntList2D","PntList3D"]:
         for pl in root.iter():
             if pl.tag.endswith(tag):
@@ -247,10 +274,46 @@ def load_lines_landxml(file_obj):
                 for i in range(0, len(nums)-step+1, step):
                     x=nums[i]; y=nums[i+1]; coords.append((x,y))
                 if len(coords)>=2: lines.append({"coords": coords, "objtype": None})
+
+    # 3) Any CoordGeom/Line with Start/End (handles Gemini PlanFeatures)
+    for cg in root.iter():
+        if not cg.tag.endswith("CoordGeom"): 
+            continue
+        # Try to read metadata (OBJTYPE) from a sibling/parent Feature node
+        objtype_val = None
+        parent = cg.getparent() if hasattr(cg, "getparent") else None
+        # Python's xml.etree doesn't keep parent by default; search within same PlanFeature
+        pf = None
+        # walk up manually by scanning children of PlanFeatures
+        for anc in root.iter():
+            if anc.tag.endswith("PlanFeature") and cg in list(anc):
+                pf = anc
+                break
+        if pf is not None:
+            for feat in pf.findall(".//Feature"):
+                for prop in feat.findall("Property"):
+                    if (prop.get("label") or "").upper() == "OBJTYPE":
+                        objtype_val = prop.get("value")
+                        break
+                if objtype_val: break
+        for geom in list(cg):
+            if not geom.tag.endswith("Line"):
+                continue
+            st = geom.find("Start"); en = geom.find("End")
+            if st is None or en is None: 
+                continue
+            svals = _parse_numbers_list(st.text or "")
+            evals = _parse_numbers_list(en.text or "")
+            if len(svals) >= 2 and len(evals) >= 2:
+                coords = [(svals[0], svals[1]), (evals[0], evals[1])]
+                lines.append({"coords": coords, "objtype": objtype_val})
+    # 4) Alignments with CoordGeom (Start/End children or point refs)
     for al in root.iter():
-        if not al.tag.endswith("Alignment"): continue
+        if not al.tag.endswith("Alignment"): 
+            continue
         for cg in al.iter():
-            if not cg.tag.endswith("CoordGeom"): continue
+            if not cg.tag.endswith("CoordGeom"): 
+                continue
             seg=[]
             def get_xy(node):
                 if node is None: return None
@@ -273,6 +336,7 @@ def load_lines_landxml(file_obj):
                     if en: seg.append(en)
             if len(seg)>=2: lines.append({"coords": seg, "objtype": None})
     return lines
+
 
 def load_lines_geojson(file_obj, prop_objtype=None):
     data = json.load(file_obj)
