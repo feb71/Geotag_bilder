@@ -1256,145 +1256,131 @@ with tabC:
 # ------------------------- Tab D: Oversiktskart -------------------------
 
 with tabD:
-    st.subheader("D) Kart – oversikt")
-    line_width_D = st.slider("Linjebredde (oversiktskart, px)", 0.1, 8.0, 0.8, 0.1, key="D_line_width")
-    center_size_D = st.slider("Senterpunkt-størrelse (px)", 0.1, 30.0, 6.0, 0.1, key="D_center_size")
-    label_centers = st.checkbox("Etikett på senter (base_id)", value=True, key="D_lbl_centers")
-    label_corners = st.checkbox("Etikett på hjørner (idx)", value=False, key="D_lbl_corners")
+    st.subheader("D) Kart – oversikt (Folium)")
 
-    centers_df = st.session_state.get("CENTERS_DF")
-    lines = st.session_state.get("LINES_LIST")
+    # Bruk data fra prosjekt/minne
+    lines       = st.session_state.get("LINES_LIST") or []
+    centers_df  = st.session_state.get("CENTERS_DF")
+    pts_df      = st.session_state.get("POINTS_DF")
+    epsg_pts    = st.session_state.get("POINTS_EPSG", 25832)
+    epsg_lin    = st.session_state.get("LINES_EPSG", 25832)
+
+    # Enkle kartinnstillinger
+    line_width_px   = st.slider("Linjebredde (px)", 1, 12, 6)
+    center_size_px  = st.slider("Punktstørrelse – kum-senter (px)", 2, 30, 10)
+    corner_size_px  = st.slider("Punktstørrelse – hjørne (px)", 1, 12, 4)
+    show_center_lbl = st.checkbox("Etikett på kum-senter (base_id)", value=True)
+    show_corner_lbl = st.checkbox("Etikett på hjørner (idx)", value=False)
+
+    # Velg kartets sentrum
+    lat0, lon0 = 59.91, 10.75  # fallback Oslo
     try:
-        import pydeck as pdk
-        epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
-        epsg_lin = st.session_state.get("LINES_EPSG", 25832)
-        layers = []
         if centers_df is not None and not centers_df.empty:
-            tr_pts = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
-            tmp = centers_df.copy()
-            tmp["lon"], tmp["lat"] = zip(*[tr_pts.transform(e, n) for e, n in zip(tmp["center_E"], tmp["center_N"])])
-            tmp["color"] = [[0, 150, 255]] * len(tmp)
-            layers.append(
-                pdk.Layer(
-                    "ScatterplotLayer",
-                    tmp,
-                    get_position='[lon, lat]',
-                    get_radius=center_size_D,
-                    radius_units="pixels",
-                    radius_min_pixels=0,
-                    get_fill_color='color',
-                    pickable=True,
-                )
-            )
-            if label_centers:
-                try:
-                    layers.append(
-                        pdk.Layer(
-                            "TextLayer",
-                            tmp,
-                            get_position='[lon, lat]',
-                            get_text="base_id",
-                            get_size=12,
-                            get_color=[0, 0, 0],
-                            get_angle=0,
-                            get_alignment_baseline="bottom",
-                        )
-                    )
-                except Exception:
-                    pass
-            view_state = pdk.ViewState(latitude=float(tmp["lat"].mean()), longitude=float(tmp["lon"].mean()), zoom=16)
-        else:
-            view_state = pdk.ViewState(latitude=59.91, longitude=10.75, zoom=10)
-
-        if lines:
+            trc = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
+            lons, lats = [], []
+            for e, n in zip(centers_df["center_E"], centers_df["center_N"]):
+                x, y = trc.transform(float(e), float(n))
+                lons.append(x); lats.append(y)
+            lat0, lon0 = float(pd.Series(lats).mean()), float(pd.Series(lons).mean())
+        elif lines:
+            # Bruk første koordinat i linjene
             if epsg_lin != 4326:
-                tr_lin = Transformer.from_crs(epsg_lin, 4326, always_xy=True)
-                def to_wgs_path(coords):
-                    return [[*tr_lin.transform(x, y)] for (x, y) in coords]
+                trl = Transformer.from_crs(epsg_lin, 4326, always_xy=True)
+                x, y = trl.transform(lines[0]["coords"][0][0], lines[0]["coords"][0][1])
             else:
-                def to_wgs_path(coords):
-                    return [[x, y] for (x, y) in coords]
-                    paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
-            layers.append(
-                pdk.Layer(
-                    "PathLayer",
-                    paths,
-                    get_path="path",
-                    get_width=line_width_D,      # NB: riktig variabelnavn
-                    width_units="pixels",
-                    width_min_pixels=0,
-                    get_color=[80, 80, 200],
-                )
-            )
-        else:
-            st.info("Ingen linjer lastet eller tolket fra filen.")
+                x, y = lines[0]["coords"][0]
+            lat0, lon0 = y, x  # (lat, lon)
+    except Exception:
+        pass
 
-        # Hjørnepunkter med etiketter (idx) – vis i kartet
-        pts_all = st.session_state.get("POINTS_DF")
-        delims_val2 = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
-        picked_any = (centers_df["base_id"].iloc[0] if centers_df is not None and not centers_df.empty else None)
-        if pts_all is not None and picked_any:
-            cols_all = detect_columns(pts_all)
-            if cols_all["sobj"] and cols_all["east"] and cols_all["north"]:
-                tmpP = pts_all.copy()
-                tmpP["_base"] = tmpP[cols_all["sobj"]].astype(str).map(lambda s: base_id(s, delims_val2))
-                tr_tmp = Transformer.from_crs(st.session_state.get("POINTS_EPSG", 25832), 4326, always_xy=True)
+    # Start folium-kart
+    m = folium.Map(location=[lat0, lon0], zoom_start=18, tiles="OpenStreetMap", control_scale=True)
 
-                def _to_xy(e, n):
-                    e2 = parse_float_maybe_comma(e)
-                    n2 = parse_float_maybe_comma(n)
-                    if e2 is None or n2 is None:
-                        return None
-                    x, y = tr_tmp.transform(e2, n2)
-                    return (x, y)
+    # ---------- Linjer (VA/EL) ----------
+    fg_lines = folium.FeatureGroup(name="Linjer (VA/EL)").add_to(m)
 
-                ll = [_to_xy(e, n) for e, n in zip(tmpP[cols_all["east"]], tmpP[cols_all["north"]])]
-                tmpP = tmpP.assign(
-                    lon=[p[0] if p else None for p in ll],
-                    lat=[p[1] if p else None for p in ll],
-                ).dropna(subset=["lon", "lat"]).reset_index(drop=True)
-                tmpP["idx"] = tmpP.groupby("_base").cumcount()
-                tmpP["color"] = [[0, 255, 0]] * len(tmpP)
+    def to_wgs_list(coords, src_epsg):
+        if src_epsg == 4326:
+            # coords = [(lon, lat)]
+            return [(y, x) for (x, y) in [(c[0], c[1]) for c in coords]]  # sikre (lat, lon)
+        tr = Transformer.from_crs(src_epsg, 4326, always_xy=True)
+        out = []
+        for (x, y) in coords:
+            lon, lat = tr.transform(x, y)
+            out.append((lat, lon))
+        return out
 
-                layers.append(
-                    pdk.Layer(
-                        "ScatterplotLayer",
-                        tmpP,
-                        get_position='[lon, lat]',
-                        get_radius=2,   # piksler
-                        radius_units="pixels",
-                        radius_min_pixels=0,
-                        get_fill_color='color',
-                        pickable=True,
-                    )
-                )
-                if label_corners:
-                    try:
-                        layers.append(
-                            pdk.Layer(
-                                "TextLayer",
-                                tmpP,
-                                get_position='[lon, lat]',
-                                get_text="idx",
-                                get_size=10,
-                                get_color=[0, 120, 0],
-                                get_angle=0,
-                                get_alignment_baseline="top",
-                            )
-                        )
-                    except Exception:
-                        pass
+    if lines:
+        try:
+            for L in lines:
+                path_latlon = to_wgs_list(L["coords"], epsg_lin)
+                folium.PolyLine(
+                    locations=path_latlon,
+                    color="#5050C8",
+                    weight=line_width_px,
+                    opacity=0.9,
+                    tooltip=L.get("objtype") or "linje",
+                ).add_to(fg_lines)
+        except Exception as e:
+            st.warning(f"Kunne ikke tegne linjer: {e}")
+    else:
+        st.info("Ingen linjer lastet eller tolket fra filen.")
 
-        st.pydeck_chart(
-            pdk.Deck(
-                map_style=None,
-                layers=layers,
-                initial_view_state=view_state,
-            ),
-            use_container_width=True,
-        )
-    except Exception as e:
-        st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
+    # ---------- Kum-sentre ----------
+    fg_centers = folium.FeatureGroup(name="Kum-senter").add_to(m)
+    if centers_df is not None and not centers_df.empty:
+        try:
+            trc = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
+            for _, r in centers_df.iterrows():
+                lon, lat = trc.transform(float(r["center_E"]), float(r["center_N"]))
+                folium.CircleMarker(
+                    location=(lat, lon),
+                    radius=center_size_px,
+                    color="#0096ff",
+                    fill=True, fill_opacity=0.9,
+                    tooltip=str(r["base_id"]) if show_center_lbl else None,
+                ).add_to(fg_centers)
+        except Exception as e:
+            st.warning(f"Kunne ikke tegne kum-sentre: {e}")
 
-st.markdown("---")
-st.caption("v11.8 • Kart-rotasjon (tegn/drag) • 'N'-størrelse • Tab B (målebok) • etiketter for hjørner/senter • EXIF WGS84")
+    # ---------- Hjørnepunkter ----------
+    fg_corners = folium.FeatureGroup(name="Hjørnepunkter").add_to(m)
+    if pts_df is not None:
+        cols = detect_columns(pts_df)
+        if cols["east"] and cols["north"]:
+            try:
+                trp = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
+                # merk idx for hvert _base (grunn-ID)
+                delims_val = st.session_state.get("SB_delims", "-_ ./")
+                tmp = pts_df.copy()
+                if cols["sobj"]:
+                    tmp["_base"] = tmp[cols["sobj"]].astype(str).map(lambda s: base_id(s, delims_val))
+                else:
+                    tmp["_base"] = ""
+
+                tmp = tmp.reset_index(drop=True)
+                tmp["idx"] = tmp.groupby("_base").cumcount()
+
+                for _, rr in tmp.iterrows():
+                    e = parse_float_maybe_comma(rr[cols["east"]])
+                    n = parse_float_maybe_comma(rr[cols["north"]])
+                    if not _is_valid_number(e) or not _is_valid_number(n):
+                        continue
+                    lon, lat = trp.transform(float(e), float(n))
+                    tip = f'{rr.get("_base","")}[{rr["idx"]}]' if show_corner_lbl else None
+                    folium.CircleMarker(
+                        location=(lat, lon),
+                        radius=corner_size_px,
+                        color="#00cc00",
+                        fill=True, fill_opacity=0.9,
+                        tooltip=tip,
+                    ).add_to(fg_corners)
+            except Exception as e:
+                st.warning(f"Kunne ikke tegne hjørner: {e}")
+
+    # Slå av/på lag i kartet
+    folium.LayerControl(collapsed=False).add_to(m)
+
+    # Render kartet
+    st_folium(m, height=600, width=None)
+
