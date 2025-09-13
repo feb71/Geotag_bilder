@@ -7,6 +7,10 @@ import piexif
 from pyproj import Transformer, CRS
 from streamlit_image_coordinates import streamlit_image_coordinates as img_coords
 
+# NEW: interactive map
+from streamlit_folium import st_folium
+import folium
+
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
@@ -14,9 +18,9 @@ try:
 except Exception:
     HEIC_OK = False
 
-st.set_page_config(page_title="Geotagging bilder v11.6", layout="wide")
-st.title("Geotagging bilder v11.6")
-st.caption("v11.6 • Sub‑px kart‑symboler • heading‑kalibrering (speil + offset) • EXIF WGS84 • LandXML/GeoJSON • 2‑klikk orientering")
+st.set_page_config(page_title="Geotagging bilder v11.7", layout="wide")
+st.title("Geotagging bilder v11.7")
+st.caption("v11.7 • Kart‑rotasjon: klikk/roter rød linje og lagre heading • Speil/offset‑kalibrering • EXIF WGS84 • LandXML/GeoJSON • 2‑klikk orientering")
 
 def deg_to_dms_rational(dd):
     sign = 1 if dd >= 0 else -1
@@ -159,19 +163,17 @@ def hex_to_rgb(s, default=(255,255,255)):
     except:
         return default
 
-# --- NEW: heading calibration (flip + offset) ---
+# --- Heading calibration (flip + offset) ---
 def apply_heading_calibration(theta):
     if theta is None:
         return None
     t = float(theta)
-    # Optional mirror (flip L/R): theta -> 360 - theta
     if st.session_state.get("SB_flip_lr", False):
         t = (360.0 - t) % 360.0
-    # Optional fixed offset
     off = float(st.session_state.get("SB_theta_off", 0.0) or 0.0)
     t = (t + off) % 360.0
     return t
-# ------------------------------------------------
+# -------------------------------------------
 
 def detect_columns(df):
     low = {c.lower(): c for c in df.columns}
@@ -451,7 +453,6 @@ with st.sidebar:
     arrow_fill = st.color_picker("Fyllfarge", value="#FFFFFF", key="SB_arrow_fill")
     arrow_outline = st.color_picker("Konturfarge", value="#000000", key="SB_arrow_outline")
 
-    # --- NEW controls: heading calibration ---
     st.subheader("Heading-kalibrering")
     flip_lr = st.checkbox("Speilvend retning (360°−θ)", value=False, key="SB_flip_lr")
     theta_off = st.number_input("Heading-justering (°)", min_value=-180.0, max_value=180.0, value=0.0, step=0.5, key="SB_theta_off")
@@ -524,7 +525,7 @@ def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None, 
                 hd = (Rot + 180) % 360
     return E, N, Alt, (_wrap_deg(hd) if _is_valid_number(hd) else None), center_hint, line_h, dist
 
-tabA, tabC, tabD = st.tabs(["A) Batch geotagg", "C) Manuell + 2‑klikk", "D) Kart"])
+tabA, tabC, tabD = st.tabs(["A) Batch geotagg", "C) Manuell + 2‑klikk / kart", "D) Kart"])
 
 with tabA:
     st.subheader("A) Geotagg mange bilder")
@@ -601,7 +602,6 @@ with tabA:
                         if E is None or N is None:
                             skipped.append({"file": name, "reason":"Mangler E/N"}); return
 
-                        # apply calibration
                         use_hd = hd if _is_valid_number(hd) else (float(man_heading) if man_enable else None)
                         use_hd = apply_heading_calibration(use_hd)
 
@@ -674,7 +674,7 @@ with tabA:
             st.exception(e)
 
 with tabC:
-    st.subheader("C) Manuell pr. bilde + to‑klikk")
+    st.subheader("C) Manuell pr. bilde + to‑klikk / kart")
 
     centers_dict = st.session_state.get("CENTERS_DICT") or {}
     epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
@@ -715,6 +715,52 @@ with tabC:
                 im_prev = im0
             st.image(im_prev, caption=f"Forhåndsvisning – heading={show_hd if show_hd is not None else '—'}°", use_column_width=True)
 
+            with st.expander("Orienter i KART (klikk for å sette nord)"):
+                if E0 is not None and N0 is not None:
+                    lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
+                    # start med gjeldende heading (kalibrering IKKE brukt for beregning, bare visning)
+                    base_hd = man_dict.get(sel, hd if _is_valid_number(hd) else 0.0) or 0.0
+                    base_hd = float(base_hd)
+                    Lm = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key="C_line_len")
+                    # gi brukeren en finjusterings-slider
+                    adj = st.slider("Finjustering (°)", -180, 180, 0, 1, key="C_line_adj")
+
+                    # bygg kart
+                    m = folium.Map(location=[lat0, lon0], zoom_start=19, tiles="OpenStreetMap", control_scale=True)
+                    folium.CircleMarker([lat0,lon0], radius=5, color="#0096ff", fill=True, fill_opacity=0.9).add_to(m)
+
+                    # hvis vi har en heading, tegn rød linje
+                    def latlon_from_heading(Ec,Nc, hd_deg, length_m):
+                        rad = math.radians(hd_deg)
+                        E1 = Ec + math.sin(rad)*length_m
+                        N1 = Nc + math.cos(rad)*length_m
+                        lt, ln = transform_EN_to_wgs84(E1, N1, epsg_pts)
+                        return lt, ln
+
+                    lt1, ln1 = latlon_from_heading(E0,N0, base_hd+adj, Lm)
+                    folium.PolyLine(locations=[[lat0,lon0],[lt1,ln1]], color="#c83c3c", weight=5).add_to(m)
+                    folium.Marker([lt1,ln1], draggable=False, icon=folium.Icon(color="red", icon="compass")).add_to(m)
+                    folium.LatLngPopup().add_to(m)
+                    out = st_folium(m, height=420, width=None)
+
+                    new_hd = None
+                    if out and out.get("last_clicked") is not None:
+                        click = out["last_clicked"]
+                        latc, lonc = click["lat"], click["lng"]
+                        # konverter klikk til E/N (samme EPSG som punktene)
+                        tr = Transformer.from_crs(4326, epsg_pts, always_xy=True)
+                        Ex, Ny = tr.transform(lonc, latc)
+                        dx = Ex - E0; dy = Ny - N0
+                        new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
+                        st.info(f"Ny heading fra kart-klikk: {new_hd:.1f}°")
+
+                    # lagre
+                    if st.button("Lagre heading (kart)", key="C_save_map"):
+                        final_hd = new_hd if _is_valid_number(new_hd) else (base_hd + adj)
+                        st.session_state["MANUAL_HEADINGS"][sel] = float(_wrap_deg(final_hd))
+                        st.success(f"Lagret {sel}: {_wrap_deg(final_hd):.1f}°")
+                else:
+                    st.warning("Mangler E/N for kum-senter.")
             with st.expander("Orienter med 2 hjørner (klikk i bildet)"):
                 pts_df = st.session_state.get("POINTS_DF")
                 delims_val = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
@@ -775,7 +821,7 @@ with tabC:
 
         with colR:
             st.markdown("**Sett heading for valgt bilde**")
-            if not _is_valid_number(hd): st.info("Ingen heading funnet automatisk – sett manuelt eller bruk 2‑klikk.")
+            if not _is_valid_number(hd): st.info("Ingen heading funnet automatisk – sett manuelt, i kart eller med 2‑klikk.")
             cur_manual = st.session_state["MANUAL_HEADINGS"].get(sel)
             base_val = int(cur_manual if _is_valid_number(cur_manual) else int(hd or 0))
             man_val = st.slider("Manuell heading (0–359°)", 0, 359, base_val, key="C_slider")
@@ -783,104 +829,11 @@ with tabC:
             if c1.button("−10°", key="C_m10"): man_val = (man_val-10)%360; st.session_state["C_slider"]=man_val
             if c2.button("+10°", key="C_p10"): man_val = (man_val+10)%360; st.session_state["C_slider"]=man_val
             if c3.button("Flip 180°", key="C_flip"): man_val = (man_val+180)%360; st.session_state["C_slider"]=man_val
-            if st.button("Lagre heading", key="C_save_one"):
+            if st.button("Lagre heading (manuell)", key="C_save_one"):
                 st.session_state["MANUAL_HEADINGS"][sel]=float(man_val); st.success(f"Lagret {sel}: {man_val}°")
 
         st.markdown("---")
-        st.markdown("**Kart (kum‑senter + heading‑vektor + hjørnepunkter)**")
-        try:
-            import pydeck as pdk
-            if E0 is not None and N0 is not None:
-                show_corners = st.checkbox("Vis hjørnepunkter i kartet", value=True, key="C_show_corners")
-                corner_size = st.slider("Størrelse på hjørnepunkter (px)", 0.1, 20.0, 2.0, 0.1, key="C_corner_size")
-                center_size = st.slider("Senterpunkt‑størrelse (px)", 0.1, 30.0, 10.0, 0.1, key="C_center_size")
-                line_width = st.slider("Linjebredde (VA/EL‑linjer, px)", 0.1, 8.0, 1.0, 0.1, key="C_line_width")
-                label_mode = st.selectbox("Hjørne‑etikett", ["idx", "punktnavn", "ingen"], index=0, key="C_corner_label")
-
-                lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
-                use_heading = st.session_state["MANUAL_HEADINGS"].get(sel, show_hd)
-
-                layers=[]
-                centers_df = st.session_state.get("CENTERS_DF")
-                if centers_df is not None and not centers_df.empty:
-                    tr_pts = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
-                    tmp = centers_df.copy()
-                    tmp["lon"], tmp["lat"] = zip(*[tr_pts.transform(e, n) for e,n in zip(tmp["center_E"], tmp["center_N"])])
-                    tmp["color"] = [[0,150,255]]*len(tmp)
-                    layers.append(pdk.Layer("ScatterplotLayer", tmp, get_position='[lon, lat]',
-                                            get_radius=center_size, radius_units="pixels", radius_min_pixels=0,
-                                            get_fill_color='color', pickable=True))
-                    try:
-                        layers.append(pdk.Layer("TextLayer", tmp, get_position='[lon, lat]', get_text="base_id", get_size=12, get_color=[0,0,0], get_angle=0, get_alignment_baseline="bottom"))
-                    except Exception: pass
-
-                lines = st.session_state.get("LINES_LIST")
-                epsg_lin = st.session_state.get("LINES_EPSG", 25832)
-                if lines:
-                    if epsg_lin != 4326:
-                        tr_lin = Transformer.from_crs(epsg_lin, 4326, always_xy=True)
-                        def to_wgs_path(coords): return [[*tr_lin.transform(x,y)] for (x,y) in coords]
-                    else:
-                        def to_wgs_path(coords): return [[x,y] for (x,y) in coords]
-                    paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
-                    layers.append(pdk.Layer("PathLayer", paths, get_path="path",
-                                            get_width=line_width, width_units="pixels", width_min_pixels=0,
-                                            get_color=[80,80,200]))
-
-                if show_corners:
-                    pts_all = st.session_state.get("POINTS_DF")
-                    delims_val2 = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
-                    if pts_all is not None and picked_label_C:
-                        cols_all = detect_columns(pts_all)
-                        if cols_all["sobj"] and cols_all["east"] and cols_all["north"]:
-                            tmpP = pts_all.copy()
-                            tmpP["_base"] = tmpP[cols_all["sobj"]].astype(str).map(lambda s: base_id(s, delims_val2))
-                            base_lbl2 = base_id(picked_label_C, delims_val2)
-                            grp = tmpP[tmpP["_base"] == base_lbl2].reset_index(drop=True).copy()
-                            if len(grp) >= 1:
-                                tr_tmp = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
-                                def _to_xy(e,n):
-                                    e2 = parse_float_maybe_comma(e); n2 = parse_float_maybe_comma(n)
-                                    if e2 is None or n2 is None: return None
-                                    x,y = tr_tmp.transform(e2, n2); return (x,y)
-                                ll = [ _to_xy(e,n) for e,n in zip(grp[cols_all["east"]], grp[cols_all["north"]]) ]
-                                grp = grp.assign(lon=[p[0] if p else None for p in ll], lat=[p[1] if p else None for p in ll])
-                                grp = grp.dropna(subset=["lon","lat"]).reset_index(drop=True)
-                                grp["idx"] = grp.index
-                                sobj_col = cols_all["sobj"] if cols_all["sobj"] else None
-                                if label_mode == "punktnavn" and sobj_col and sobj_col in grp.columns:
-                                    grp["_label"] = grp[sobj_col].astype(str)
-                                elif label_mode == "idx":
-                                    grp["_label"] = grp["idx"].astype(str)
-                                else:
-                                    grp["_label"] = ""
-                                grp["color"] = [[0,255,0]]*len(grp)
-                                layers.append(pdk.Layer("ScatterplotLayer", grp, get_position='[lon, lat]',
-                                                        get_radius=corner_size, radius_units="pixels", radius_min_pixels=0,
-                                                        get_fill_color='color', pickable=True))
-                                try:
-                                    if label_mode != "ingen":
-                                        layers.append(pdk.Layer("TextLayer", grp, get_position='[lon, lat]', get_text="_label", get_size=12, get_color=[0,120,0], get_angle=0, get_alignment_baseline="top"))
-                                except Exception: pass
-
-                if _is_valid_number(use_heading):
-                    L=5.0; rad=math.radians(use_heading)
-                    E1 = E0 + math.sin(rad)*L; N1 = N0 + math.cos(rad)*L
-                    lat1, lon1 = transform_EN_to_wgs84(E1, N1, epsg_pts)
-                    arrow_path=[{"path":[[lon0,lat0],[lon1,lat1]]}]
-                    layers.append(pdk.Layer("PathLayer", arrow_path, get_path="path",
-                                            get_width=3, width_units="pixels", width_min_pixels=0,
-                                            get_color=[200,60,60]))
-
-                view_state = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=18)
-                st.pydeck_chart(pdk.Deck(map_style=None, layers=layers, initial_view_state=view_state), use_container_width=True)
-            else:
-                st.info("Kum-senter mangler E/N – last opp punkter.")
-        except Exception as e:
-            st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
-
-        st.markdown("---")
-        if st.button("Eksporter alle som ZIP (med manuell heading der satt)", key="C_export"):
+        if st.button("Eksporter alle som ZIP (med heading der satt)", key="C_export"):
             processed=0; skipped=[]; zout_mem=io.BytesIO(); zout=zipfile.ZipFile(zout_mem,"w",zipfile.ZIP_DEFLATED)
             for f in files_up_C:
                 try:
@@ -896,7 +849,6 @@ with tabC:
                     E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label_C, E0,N0, Alt0, None, manual_override=man if man is not None else None)
                     if E is None or N is None: skipped.append({"file":f.name,"reason":"Mangler E/N"}); continue
 
-                    # apply calibration
                     hd = apply_heading_calibration(hd)
 
                     lat, lon = transform_EN_to_wgs84(E, N, epsg_pts)
@@ -961,4 +913,4 @@ with tabD:
         st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
 
 st.markdown("---")
-st.caption("v11.6 • Sub‑px kart‑symboler • heading‑kalibrering (speil + offset) • EXIF WGS84, LandXML/GeoJSON, manuell heading, 2‑klikk, CRS‑verktøy")
+st.caption("v11.7 • Kart‑rotasjon (klikk for heading) • Speil/offset‑kalibrering • EXIF WGS84, LandXML/GeoJSON, 2‑klikk, CRS‑verktøy")
