@@ -15,9 +15,9 @@ try:
 except Exception:
     HEIC_OK = False
 
-st.set_page_config(page_title="Geotagging bilder v11.1", layout="wide")
-st.title("Geotagging bilder v11.1")
-st.caption("Punkter/linjer → geotag + heading + nordpil (EXIF), manuell pr. bilde, to-klikk-orientering fra hjørner, kart (med hjørnepunkter), CRS-verktøy")
+st.set_page_config(page_title="Geotagging bilder v11.2", layout="wide")
+st.title("Geotagging bilder v11.2")
+st.caption("v11.2 • Hjørnepunkter tydeligere i kart (toggle + størrelse) • + alt fra v11.1: hjørnepunkter i kart, 2‑klikk orientering, EXIF, CRS‑verktøy")
 
 # ---------- helpers ----------
 def deg_to_dms_rational(dd):
@@ -213,7 +213,6 @@ def load_lines_landxml(file_obj):
             nums = _parse_numbers_list(p.text or "")
             if len(nums)>=2: pnt_by_name[p.get("name")] = (nums[0], nums[1])
     lines = []
-    # PntList2D/3D
     for tag in ["PntList2D","PntList3D"]:
         for pl in root.iter():
             if pl.tag.endswith(tag):
@@ -222,7 +221,6 @@ def load_lines_landxml(file_obj):
                 for i in range(0,len(nums)-step+1,step):
                     x=nums[i]; y=nums[i+1]; coords.append((x,y))
                 if len(coords)>=2: lines.append({"coords": coords, "objtype": None})
-    # PlanFeatures -> CoordGeom -> Line -> Start/End + OBJTYPE
     for cg in root.iter():
         if not cg.tag.endswith("CoordGeom"): continue
         objtype_val = None
@@ -243,7 +241,6 @@ def load_lines_landxml(file_obj):
             svals = _parse_numbers_list(stn.text or ""); evals = _parse_numbers_list(enn.text or "")
             if len(svals)>=2 and len(evals)>=2:
                 lines.append({"coords":[(svals[0], svals[1]), (evals[0], evals[1])], "objtype": objtype_val})
-    # Alignments
     for al in root.iter():
         if not al.tag.endswith("Alignment"): continue
         for cg in al.iter():
@@ -411,7 +408,6 @@ with st.sidebar:
                 n_vertices = sum(len(L["coords"]) for L in lines_list)
                 some_types = sorted({str(L.get("objtype")) for L in lines_list if L.get("objtype")})[:5]
                 st.success(f"Lastet {n_lines} linjer med totalt {n_vertices} punkter. Typer (utdrag): {', '.join(some_types) if some_types else '(ingen oppgitt)'}")
-                # apply swap/scale/offset in lines EPSG
                 def adjust_coords(coords):
                     out=[]
                     for (x,y) in coords:
@@ -422,7 +418,6 @@ with st.sidebar:
                         out.append((ex,ny))
                     return out
                 lines_list = [{"coords": adjust_coords(L["coords"]), "objtype": L.get("objtype")} for L in lines_list]
-                # extent/samples
                 allx=[xy[0] for L in lines_list for xy in L["coords"]]
                 ally=[xy[1] for L in lines_list for xy in L["coords"]]
                 if allx and ally:
@@ -473,7 +468,6 @@ def heading_from_lines(E,N):
     epsg_lin = st.session_state.get("LINES_EPSG", 25832)
     buf = st.session_state.get("BUFFER_M", 2.0)
     if not lines: return (None, None)
-    # reproject to pts epsg
     if epsg_lin != epsg_pts:
         tr = Transformer.from_crs(epsg_lin, epsg_pts, always_xy=True)
         def reproj(coords):
@@ -718,7 +712,6 @@ with tabC:
                 if corners_df is None or len(corners_df) < 2:
                     st.info("Finner ikke minst 2 hjørner for denne kummen i opplastet punktfil.")
                 else:
-                    # vis indekserte hjørner i tabell
                     corners_df = corners_df.reset_index(drop=True).copy()
                     corners_df["idx"] = corners_df.index
                     show_cols = ["idx"]
@@ -738,7 +731,6 @@ with tabC:
                     clicks = st.session_state.get(click_key + "_list", [])
                     st.write(f"Klikk: {clicks}")
 
-                    # indeksvalg i DF for A/B
                     idxA = st.number_input("Indeks hjørne A (radnr 0..)", min_value=0, max_value=len(corners_df)-1, value=0, key="C_cA_idx")
                     idxB = st.number_input("Indeks hjørne B (radnr 0..)", min_value=0, max_value=len(corners_df)-1, value=min(1, len(corners_df)-1), key="C_cB_idx")
                     EA = parse_float_maybe_comma(corners_df.loc[idxA, "E"]) if 0 <= idxA < len(corners_df) else None
@@ -779,6 +771,10 @@ with tabC:
         try:
             import pydeck as pdk
             if E0 is not None and N0 is not None:
+                # UI for corner visibility/size
+                show_corners = st.checkbox("Vis hjørnepunkter i kartet", value=True, key="C_show_corners")
+                corner_size = st.slider("Størrelse på hjørnepunkter", 4, 18, 12, key="C_corner_size")
+
                 lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
                 use_heading = st.session_state["MANUAL_HEADINGS"].get(sel, show_hd)
                 layers=[]
@@ -805,30 +801,31 @@ with tabC:
                     paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
                     layers.append(pdk.Layer("PathLayer", paths, get_path="path", get_width=2, get_color=[80,80,200]))
                 # corner points for selected base
-                pts_all = st.session_state.get("POINTS_DF")
-                delims_val2 = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
-                if pts_all is not None and picked_label_C:
-                    cols_all = detect_columns(pts_all)
-                    if cols_all["sobj"] and cols_all["east"] and cols_all["north"]:
-                        tmpP = pts_all.copy()
-                        tmpP["_base"] = tmpP[cols_all["sobj"]].astype(str).map(lambda s: base_id(s, delims_val2))
-                        base_lbl2 = base_id(picked_label_C, delims_val2)
-                        grp = tmpP[tmpP["_base"] == base_lbl2].reset_index(drop=True).copy()
-                        if len(grp) >= 1:
-                            tr_tmp = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
-                            def _to_xy(e,n):
-                                e2 = parse_float_maybe_comma(e); n2 = parse_float_maybe_comma(n)
-                                if e2 is None or n2 is None: return None
-                                x,y = tr_tmp.transform(e2, n2); return (x,y)
-                            ll = [ _to_xy(e,n) for e,n in zip(grp[cols_all["east"]], grp[cols_all["north"]]) ]
-                            grp = grp.assign(lon=[p[0] if p else None for p in ll], lat=[p[1] if p else None for p in ll])
-                            grp = grp.dropna(subset=["lon","lat"]).reset_index(drop=True)
-                            grp["idx"] = grp.index
-                            grp["color"] = [[80,200,80]]*len(grp)
-                            layers.append(pdk.Layer("ScatterplotLayer", grp, get_position='[lon, lat]', get_radius=6, get_fill_color='color', pickable=True))
-                            try:
-                                layers.append(pdk.Layer("TextLayer", grp, get_position='[lon, lat]', get_text="idx", get_size=14, get_color=[0,100,0], get_angle=0, get_alignment_baseline="top"))
-                            except Exception: pass
+                if show_corners:
+                    pts_all = st.session_state.get("POINTS_DF")
+                    delims_val2 = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
+                    if pts_all is not None and picked_label_C:
+                        cols_all = detect_columns(pts_all)
+                        if cols_all["sobj"] and cols_all["east"] and cols_all["north"]:
+                            tmpP = pts_all.copy()
+                            tmpP["_base"] = tmpP[cols_all["sobj"]].astype(str).map(lambda s: base_id(s, delims_val2))
+                            base_lbl2 = base_id(picked_label_C, delims_val2)
+                            grp = tmpP[tmpP["_base"] == base_lbl2].reset_index(drop=True).copy()
+                            if len(grp) >= 1:
+                                tr_tmp = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
+                                def _to_xy(e,n):
+                                    e2 = parse_float_maybe_comma(e); n2 = parse_float_maybe_comma(n)
+                                    if e2 is None or n2 is None: return None
+                                    x,y = tr_tmp.transform(e2, n2); return (x,y)
+                                ll = [ _to_xy(e,n) for e,n in zip(grp[cols_all["east"]], grp[cols_all["north"]]) ]
+                                grp = grp.assign(lon=[p[0] if p else None for p in ll], lat=[p[1] if p else None for p in ll])
+                                grp = grp.dropna(subset=["lon","lat"]).reset_index(drop=True)
+                                grp["idx"] = grp.index
+                                grp["color"] = [[0,255,0]]*len(grp)  # bright lime
+                                layers.append(pdk.Layer("ScatterplotLayer", grp, get_position='[lon, lat]', get_radius=corner_size, get_fill_color='color', pickable=True))
+                                try:
+                                    layers.append(pdk.Layer("TextLayer", grp, get_position='[lon, lat]', get_text="idx", get_size=14, get_color=[0,120,0], get_angle=0, get_alignment_baseline="top"))
+                                except Exception: pass
                 # arrow
                 if _is_valid_number(use_heading):
                     L=5.0; rad=math.radians(use_heading)
@@ -853,7 +850,6 @@ with tabC:
                     info = centers_dict.get(picked_label_C, {})
                     E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
                     man = st.session_state["MANUAL_HEADINGS"].get(f.name)
-                    # Hvis ikke individuell finnes, bruk lagret for valgt 'sel' om samme navn
                     if man is None and f.name == sel:
                         man = st.session_state["MANUAL_HEADINGS"].get(sel)
                     E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label_C, E0,N0, Alt0, None, manual_override=man if man is not None else None)
@@ -914,4 +910,4 @@ with tabD:
         st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
 
 st.markdown("---")
-st.caption("v11.1 • Hjørnepunkter i kart (Tab C), indekserte hjørner i tabell • + alt fra v11.0: CRS-verktøy, etiketter, manuell pr. bilde, 2-klikk-orientering, farger på nordpil, LandXML/GeoJSON, EXIF WGS84")
+st.caption("v11.2 • Hjørnepunkter tydeligere i kart (toggle + størrelse) • EXIF WGS84, LandXML/GeoJSON, manuell heading, 2‑klikk, CRS-verktøy")
