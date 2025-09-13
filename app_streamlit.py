@@ -15,9 +15,9 @@ try:
 except Exception:
     HEIC_OK = False
 
-st.set_page_config(page_title="Geotagging bilder v11.0", layout="wide")
-st.title("Geotagging bilder v11.0")
-st.caption("Punkter/linjer → geotag + heading + nordpil (EXIF), manuell pr. bilde, to-klikk-orientering fra hjørner, kart, CRS-verktøy")
+st.set_page_config(page_title="Geotagging bilder v11.1", layout="wide")
+st.title("Geotagging bilder v11.1")
+st.caption("Punkter/linjer → geotag + heading + nordpil (EXIF), manuell pr. bilde, to-klikk-orientering fra hjørner, kart (med hjørnepunkter), CRS-verktøy")
 
 # ---------- helpers ----------
 def deg_to_dms_rational(dd):
@@ -718,25 +718,35 @@ with tabC:
                 if corners_df is None or len(corners_df) < 2:
                     st.info("Finner ikke minst 2 hjørner for denne kummen i opplastet punktfil.")
                 else:
-                    st.dataframe(corners_df[["E","N"]].head(10), use_container_width=True)
+                    # vis indekserte hjørner i tabell
+                    corners_df = corners_df.reset_index(drop=True).copy()
+                    corners_df["idx"] = corners_df.index
+                    show_cols = ["idx"]
+                    if "S_OBJID" in corners_df.columns: show_cols.append("S_OBJID")
+                    show_cols += [c for c in ["E","N"] if c in corners_df.columns]
+                    st.dataframe(corners_df[show_cols].head(30), use_container_width=True)
+
+                    st.caption("Klikk først Hjørne A, deretter Hjørne B i bildet:")
+                    click_key = f"C_clicks_{picked_label_C}_{sel}"
+                    coords = img_coords(im0, key=click_key)
+                    if coords:
+                        clicks = st.session_state.get(click_key + "_list", [])
+                        if not clicks or (clicks and (clicks[-1] != (coords['x'], coords['y']))):
+                            clicks.append((coords["x"], coords["y"]))
+                            clicks = clicks[-2:]
+                            st.session_state[click_key + "_list"] = clicks
+                    clicks = st.session_state.get(click_key + "_list", [])
+                    st.write(f"Klikk: {clicks}")
+
+                    # indeksvalg i DF for A/B
                     idxA = st.number_input("Indeks hjørne A (radnr 0..)", min_value=0, max_value=len(corners_df)-1, value=0, key="C_cA_idx")
                     idxB = st.number_input("Indeks hjørne B (radnr 0..)", min_value=0, max_value=len(corners_df)-1, value=min(1, len(corners_df)-1), key="C_cB_idx")
                     EA = parse_float_maybe_comma(corners_df.loc[idxA, "E"]) if 0 <= idxA < len(corners_df) else None
                     NA = parse_float_maybe_comma(corners_df.loc[idxA, "N"]) if 0 <= idxA < len(corners_df) else None
                     EB = parse_float_maybe_comma(corners_df.loc[idxB, "E"]) if 0 <= idxB < len(corners_df) else None
                     NB = parse_float_maybe_comma(corners_df.loc[idxB, "N"]) if 0 <= idxB < len(corners_df) else None
+
                     if _is_valid_number(EA) and _is_valid_number(NA) and _is_valid_number(EB) and _is_valid_number(NB):
-                        st.caption("Klikk først Hjørne A, deretter Hjørne B i bildet:")
-                        click_key = f"C_clicks_{picked_label_C}_{sel}"
-                        coords = img_coords(im0, key=click_key)
-                        if coords:
-                            clicks = st.session_state.get(click_key + "_list", [])
-                            if not clicks or (clicks and (clicks[-1] != (coords['x'], coords['y']))):
-                                clicks.append((coords["x"], coords["y"]))
-                                clicks = clicks[-2:]
-                                st.session_state[click_key + "_list"] = clicks
-                        clicks = st.session_state.get(click_key + "_list", [])
-                        st.write(f"Klikk: {clicks}")
                         if len(clicks) == 2:
                             (xA,yA),(xB,yB) = clicks
                             az_real = (math.degrees(math.atan2(EB - EA, NB - NA)) + 360.0) % 360.0
@@ -765,7 +775,7 @@ with tabC:
                 st.session_state["MANUAL_HEADINGS"][sel]=float(man_val); st.success(f"Lagret {sel}: {man_val}°")
 
         st.markdown("---")
-        st.markdown("**Kart (kum-senter + heading-vektor for valgt bilde)**")
+        st.markdown("**Kart (kum-senter + heading-vektor + hjørnepunkter)**")
         try:
             import pydeck as pdk
             if E0 is not None and N0 is not None:
@@ -794,6 +804,31 @@ with tabC:
                         def to_wgs_path(coords): return [[x,y] for (x,y) in coords]
                     paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
                     layers.append(pdk.Layer("PathLayer", paths, get_path="path", get_width=2, get_color=[80,80,200]))
+                # corner points for selected base
+                pts_all = st.session_state.get("POINTS_DF")
+                delims_val2 = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
+                if pts_all is not None and picked_label_C:
+                    cols_all = detect_columns(pts_all)
+                    if cols_all["sobj"] and cols_all["east"] and cols_all["north"]:
+                        tmpP = pts_all.copy()
+                        tmpP["_base"] = tmpP[cols_all["sobj"]].astype(str).map(lambda s: base_id(s, delims_val2))
+                        base_lbl2 = base_id(picked_label_C, delims_val2)
+                        grp = tmpP[tmpP["_base"] == base_lbl2].reset_index(drop=True).copy()
+                        if len(grp) >= 1:
+                            tr_tmp = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
+                            def _to_xy(e,n):
+                                e2 = parse_float_maybe_comma(e); n2 = parse_float_maybe_comma(n)
+                                if e2 is None or n2 is None: return None
+                                x,y = tr_tmp.transform(e2, n2); return (x,y)
+                            ll = [ _to_xy(e,n) for e,n in zip(grp[cols_all["east"]], grp[cols_all["north"]]) ]
+                            grp = grp.assign(lon=[p[0] if p else None for p in ll], lat=[p[1] if p else None for p in ll])
+                            grp = grp.dropna(subset=["lon","lat"]).reset_index(drop=True)
+                            grp["idx"] = grp.index
+                            grp["color"] = [[80,200,80]]*len(grp)
+                            layers.append(pdk.Layer("ScatterplotLayer", grp, get_position='[lon, lat]', get_radius=6, get_fill_color='color', pickable=True))
+                            try:
+                                layers.append(pdk.Layer("TextLayer", grp, get_position='[lon, lat]', get_text="idx", get_size=14, get_color=[0,100,0], get_angle=0, get_alignment_baseline="top"))
+                            except Exception: pass
                 # arrow
                 if _is_valid_number(use_heading):
                     L=5.0; rad=math.radians(use_heading)
@@ -879,4 +914,4 @@ with tabD:
         st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
 
 st.markdown("---")
-st.caption("v11.0 • CRS-verktøy (swap/scale/offset), etiketter, manuell pr. bilde, 2-klikk-orientering, farger på nordpil, LandXML/GeoJSON, EXIF WGS84")
+st.caption("v11.1 • Hjørnepunkter i kart (Tab C), indekserte hjørner i tabell • + alt fra v11.0: CRS-verktøy, etiketter, manuell pr. bilde, 2-klikk-orientering, farger på nordpil, LandXML/GeoJSON, EXIF WGS84")
