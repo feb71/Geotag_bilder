@@ -1064,6 +1064,38 @@ with tabC:
     max_zoom=23              # <— la kartet få gå dypere
 )
 
+    # OSM (vanlig, maks ~19)
+folium.TileLayer(
+    tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attr="© OpenStreetMap contributors",
+    name="OSM",
+    max_zoom=19,
+    overlay=False,
+    control=True,
+).add_to(m)
+
+# Esri World Imagery – høy maks zoom (ofte 22–23)
+folium.TileLayer(
+    tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr="Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+    name="Esri imagery",
+    max_zoom=23,
+    overlay=False,
+    control=True,
+).add_to(m)
+
+# Valgfritt: Esri World Street Map
+folium.TileLayer(
+    tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    attr="Esri",
+    name="Esri streets",
+    max_zoom=23,
+    overlay=False,
+    control=True,
+).add_to(m)
+
+folium.LayerControl(collapsed=False).add_to(m)
+
 
     if centers_dict:
         options = sorted(list(centers_dict.keys()))
@@ -1402,6 +1434,38 @@ with tabD:
     prefer_canvas=True,      # <— viktig for sub-1 px
     max_zoom=23              # <— la kartet få gå dypere
 )
+
+    # OSM (vanlig, maks ~19)
+folium.TileLayer(
+    tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attr="© OpenStreetMap contributors",
+    name="OSM",
+    max_zoom=19,
+    overlay=False,
+    control=True,
+).add_to(m)
+
+# Esri World Imagery – høy maks zoom (ofte 22–23)
+folium.TileLayer(
+    tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr="Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+    name="Esri imagery",
+    max_zoom=23,
+    overlay=False,
+    control=True,
+).add_to(m)
+
+# Valgfritt: Esri World Street Map
+folium.TileLayer(
+    tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    attr="Esri",
+    name="Esri streets",
+    max_zoom=23,
+    overlay=False,
+    control=True,
+).add_to(m)
+
+folium.LayerControl(collapsed=False).add_to(m)
 
 
     # ---------- Linjer (VA/EL) ----------
