@@ -1040,6 +1040,28 @@ with tabC:
                     m = folium.Map(location=[lat0, lon0], zoom_start=19, tiles="OpenStreetMap", control_scale=True)
                     folium.CircleMarker([lat0, lon0], radius=5, color="#0096ff", fill=True, fill_opacity=0.9, tooltip=f"{picked_label_C}").add_to(m)
 
+                    # Tegn VA/EL-linjer i Tab C-kartet
+                    lines_list = st.session_state.get("LINES_LIST") or []
+                    epsg_lin = st.session_state.get("LINES_EPSG", 25832)
+
+                    def to_wgs_list_C(coords, src_epsg):
+                        if src_epsg == 4326:
+                            return [(y, x) for (x, y) in [(c[0], c[1]) for c in coords]]
+                        trL = Transformer.from_crs(src_epsg, 4326, always_xy=True)
+                        out = []
+                        for (x, y) in coords:
+                            lon, lat = trL.transform(x, y)
+                            out.append((lat, lon))
+                        return out
+
+                    if lines_list:
+                        fg_lines_C = folium.FeatureGroup(name="Linjer (VA/EL)").add_to(m)
+                        for L in lines_list:
+                            path_latlon = to_wgs_list_C(L["coords"], epsg_lin)
+                            folium.PolyLine(path_latlon, color="#5050C8", weight=5, opacity=0.9,
+                                            tooltip=L.get("objtype") or "linje").add_to(fg_lines_C)
+
+
                     # Hjornemarkører (fra opplastet punkttabell)
                     pts_df = st.session_state.get("POINTS_DF")
                     delims_val = st.session_state.get("SB_delims", "-_ ./")
