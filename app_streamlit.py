@@ -1348,9 +1348,9 @@ with tabD:
     epsg_lin    = st.session_state.get("LINES_EPSG", 25832)
 
     # Enkle kartinnstillinger
-    line_width_px   = st.slider("Linjebredde (px)", 1, 12, 6)
-    center_size_px  = st.slider("Punktstørrelse – kum-senter (px)", 2, 30, 10)
-    corner_size_px  = st.slider("Punktstørrelse – hjørne (px)", 1, 12, 4)
+    line_width_px   = st.slider("Linjebredde (px)", 0.1, 12, 0.8, 0.1)
+    center_size_px  = st.slider("Punktstørrelse – kum-senter (px)", 0.1, 30, 3, 0.1)
+    corner_size_px  = st.slider("Punktstørrelse – hjørne (px)", 0.1, 12, 1.0, 0.1)
     show_center_lbl = st.checkbox("Etikett på kum-senter (base_id)", value=True)
     show_corner_lbl = st.checkbox("Etikett på hjørner (idx)", value=False)
 
