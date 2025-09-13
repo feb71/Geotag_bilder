@@ -559,6 +559,21 @@ with st.sidebar:
                 some_types = sorted({str(L.get("objtype")) for L in lines_list if L.get("objtype")})[:5]
                 st.success(f"Lastet {n_lines} linjer med totalt {n_vertices} punkter. Typer (utdrag): {', '.join(some_types) if some_types else '(ingen oppgitt)'}")
 
+                # etter lines_list = load_lines_auto(...)
+
+                auto_swap = st.checkbox("Auto-oppdag NE→EN (prøv)", value=True, key="SB_auto_swap")
+
+                if auto_swap and lines_list:
+                # se på noen første punkter; hvis "x" ser ut som Nord (millioner) og "y" er ~100k, bytt
+                    import numpy as np
+                    sample = [xy for L in lines_list for xy in L["coords"][:5]]
+                    xs = np.array([p[0] for p in sample], dtype=float)
+                    ys = np.array([p[1] for p in sample], dtype=float)
+                    if np.nanmedian(xs) > np.nanmedian(ys) * 3:  # enkel terskel
+                        st.info("Oppdaget NE-rekkefølge → bytter akser automatisk.")
+                        swap_axes = True
+
+                
                 def adjust_coords(coords):
                     out = []
                     for (x, y) in coords:
