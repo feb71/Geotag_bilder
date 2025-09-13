@@ -280,20 +280,37 @@ def _parse_numbers_list(txt):
 
 # -------------------- Linjeleser: LandXML & GeoJSON --------------------
 
+def _parse_numbers_list(txt):
+    import re
+    if not txt: return []
+    parts = re.split(r'[\s,;]+', str(txt).strip())
+    vals = []
+    for p in parts:
+        try: vals.append(float(p))
+        except: pass
+    return vals
+
 def load_lines_landxml(file_obj):
+    """
+    Leser LandXML med PlanFeatures/PlanFeature/CoordGeom/Line/Start|End.
+    Tåler pos som tekst ('N E Z') eller som attrib (x/y eller X/Y), og pntRef.
+    """
     import xml.etree.ElementTree as ET, io as _io
     text = file_obj.read()
     if isinstance(text, bytes):
+        # mange Gemini-filer er ISO-8859-1
         try:
             text = text.decode("utf-8")
         except:
             text = text.decode("iso-8859-1", errors="ignore")
+
     it = ET.iterparse(_io.StringIO(text))
     for _, el in it:
         if "}" in el.tag:
             el.tag = el.tag.split("}", 1)[1]
     root = it.root
 
+    # evt. støtte for <Pnts><Pnt name="...">x y z</Pnt> og pntRef
     pnt_by_name = {}
     for p in root.iter():
         if p.tag.endswith("Pnt") and p.get("name"):
@@ -301,155 +318,135 @@ def load_lines_landxml(file_obj):
             if len(nums) >= 2:
                 pnt_by_name[p.get("name")] = (nums[0], nums[1])
 
-    lines = []
-    # PntList2D/3D
-    for tag in ["PntList2D", "PntList3D"]:
-        for pl in root.iter():
-            if pl.tag.endswith(tag):
-                nums = _parse_numbers_list(pl.text or "")
-                coords = []
-                step = 2 if tag == "PntList2D" else 3
-                for i in range(0, len(nums) - step + 1, step):
-                    x = nums[i]
-                    y = nums[i + 1]
-                    coords.append((x, y))
-                if len(coords) >= 2:
-                    lines.append({"coords": coords, "objtype": None})
+    def get_xy(node):
+        if node is None:
+            return None
+        # 1) pntRef
+        ref = node.get("pntRef") if hasattr(node, "get") else None
+        if ref and ref in pnt_by_name:
+            return pnt_by_name[ref]
+        # 2) tekst: "x y [z]" (ofte N E Z i Gemini)
+        nums = _parse_numbers_list(getattr(node, "text", None) or "")
+        if len(nums) >= 2:
+            return (nums[0], nums[1])
+        # 3) attrib x/y eller X/Y
+        for kx, ky in (("x", "y"), ("X", "Y")):
+            if node.get(kx) and node.get(ky):
+                try:
+                    return (float(node.get(kx)), float(node.get(ky)))
+                except:
+                    pass
+        return None
 
-    # CoordGeom line segments med (Start/End)
+    lines = []
     for cg in root.iter():
         if not cg.tag.endswith("CoordGeom"):
             continue
-        objtype_val = None
-        pf = None
-        # forsøk å finne tilhørende PlanFeature->Feature->Property label=OBJTYPE
-        for anc in root.iter():
-            if anc.tag.endswith("PlanFeature") and cg in list(anc):
-                pf = anc
-                break
-        if pf is not None:
-            for feat in pf.findall(".//Feature"):
-                for prop in feat.findall("Property"):
-                    if (prop.get("label") or "").upper() == "OBJTYPE":
-                        objtype_val = prop.get("value")
-                        break
-                if objtype_val:
-                    break
         for geom in list(cg):
             if not geom.tag.endswith("Line"):
                 continue
-            stn = geom.find("Start")
-            enn = geom.find("End")
-            if stn is None or enn is None:
-                continue
-            svals = _parse_numbers_list(stn.text or "")
-            evals = _parse_numbers_list(enn.text or "")
-            if len(svals) >= 2 and len(evals) >= 2:
-                lines.append({"coords": [(svals[0], svals[1]), (evals[0], evals[1])], "objtype": objtype_val})
+            s = get_xy(geom.find("Start"))
+            e = get_xy(geom.find("End"))
+            if s and e:
+                lines.append({"coords": [s, e], "objtype": None})
 
-    # Alignment/CoordGeom med Start/End i under-noder
-    for al in root.iter():
-        if not al.tag.endswith("Alignment"):
-            continue
-        for cg in al.iter():
-            if not cg.tag.endswith("CoordGeom"):
-                continue
-            seg = []
-
-            def get_xy(node):
-                if node is None:
-                    return None
-                ref = node.get("pntRef") if hasattr(node, "get") else None
-                if ref and ref in pnt_by_name:
-                    return pnt_by_name[ref]
-                nums = _parse_numbers_list(getattr(node, "text", None) or "")
-                if len(nums) >= 2:
-                    return (nums[0], nums[1])
-                try:
-                    x = float(node.get("x"))
-                    y = float(node.get("y"))
-                    return (x, y)
-                except:
-                    return None
-
-            for geom in list(cg):
-                tag = geom.tag
-                if tag.endswith(("Line", "Curve", "Spiral")):
-                    stn = enn = None
-                    for ch in list(geom):
-                        ctag = ch.tag
-                        if ctag.lower().endswith("start"):
-                            stn = get_xy(ch)
-                        elif ctag.lower().endswith("end"):
-                            enn = get_xy(ch)
-                    if stn and (not seg or seg[-1] != stn):
-                        seg.append(stn)
-                    if enn:
-                        seg.append(enn)
-            if len(seg) >= 2:
-                lines.append({"coords": seg, "objtype": None})
+    # evt. PntList2D/3D
+    for tag in ("PntList2D", "PntList3D"):
+        for pl in root.iter():
+            if pl.tag.endswith(tag):
+                nums = _parse_numbers_list(pl.text or "")
+                step = 2 if tag == "PntList2D" else 3
+                coords = []
+                for i in range(0, len(nums) - step + 1, step):
+                    coords.append((nums[i], nums[i + 1]))
+                if len(coords) >= 2:
+                    lines.append({"coords": coords, "objtype": None})
 
     return lines
 
-def load_lines_geojson(file_obj, prop_objtype=None):
-    data = json.load(file_obj)
-    feats = data["features"] if "features" in data else [data]
+def load_lines_gml(file_obj, prop_objtype=None):
+    """
+    Leser GML (gml:LineString/MultiLineString) m/posList/coordinates.
+    """
+    import xml.etree.ElementTree as ET, io as _io
+    text = file_obj.read()
+    if isinstance(text, bytes):
+        try:
+            text = text.decode("utf-8")
+        except:
+            text = text.decode("iso-8859-1", errors="ignore")
+
+    it = ET.iterparse(_io.StringIO(text))
+    for _, el in it:
+        if "}" in el.tag:
+            el.tag = el.tag.split("}", 1)[1]
+    root = it.root
+
+    def parse_poslist(txt):
+        vals = _parse_numbers_list(txt)
+        return [(vals[i], vals[i + 1]) for i in range(0, len(vals) - 1, 2)]
+
     lines = []
-    for f in feats:
-        g = f.get("geometry", {}) or {}
-        props = f.get("properties", {}) or {}
-        typ = props.get(prop_objtype) if prop_objtype else props.get("objtype") or props.get("type")
-        t = g.get("type", "")
-        if t == "LineString":
-            coords = [(float(x), float(y)) for x, y, *_ in g.get("coordinates", [])]
-            if len(coords) >= 2:
-                lines.append({"coords": coords, "objtype": typ})
-        elif t == "MultiLineString":
-            for arr in g.get("coordinates", []):
-                coords = [(float(x), float(y)) for x, y, *_ in arr]
-                if len(coords) >= 2:
-                    lines.append({"coords": coords, "objtype": typ})
+    for ln in root.iter():
+        t = ln.tag.lower()
+        if t in ("linestring", "multilinestring"):
+            for p in ln.iter():
+                pt = p.tag.lower()
+                if pt == "poslist":
+                    coords = parse_poslist(p.text or "")
+                    if len(coords) >= 2:
+                        lines.append({"coords": coords, "objtype": None})
+                elif pt == "coordinates":
+                    txt = (p.text or "").replace(",", " ").strip()
+                    vals = _parse_numbers_list(txt)
+                    coords = [(vals[i], vals[i + 1]) for i in range(0, len(vals) - 1, 2)]
+                    if len(coords) >= 2:
+                        lines.append({"coords": coords, "objtype": None})
     return lines
 
 def load_lines_auto(file_obj, filename, prop_objtype=None):
-    name = filename.lower()
+    """
+    Prøv i rekkefølge: GeoJSON → GML → LandXML → GeoJSON fallback.
+    """
+    name = (filename or "").lower()
+
+    # GeoJSON
     if name.endswith((".geojson", ".json")):
-        return load_lines_geojson(file_obj, prop_objtype)
-    if name.endswith((".xml", ".landxml")):
+        try:
+            file_obj.seek(0)
+            return load_lines_geojson(file_obj, prop_objtype)
+        except:
+            pass
+
+    # GML-signatur?
+    try:
+        file_obj.seek(0)
+        head = file_obj.read(4096)
+        if isinstance(head, bytes):
+            try:
+                head = head.decode("utf-8", errors="ignore")
+            except:
+                head = head.decode("iso-8859-1", errors="ignore")
+        if "<gml:" in head or "<LineString" in head or "<MultiLineString" in head:
+            file_obj.seek(0)
+            return load_lines_gml(file_obj, prop_objtype)
+    except:
+        pass
+
+    # LandXML
+    try:
+        file_obj.seek(0)
         return load_lines_landxml(file_obj)
-    # Fallback: prøv begge
+    except:
+        pass
+
+    # fallback: forsøk GeoJSON igjen
     try:
         file_obj.seek(0)
         return load_lines_geojson(file_obj, prop_objtype)
     except:
-        try:
-            file_obj.seek(0)
-            return load_lines_landxml(file_obj)
-        except:
-            return []
+        return []
 
-def nearest_heading_on_polyline(coords, pt):
-    px, py = pt
-    best = (None, float("inf"), None)
-    for i in range(len(coords) - 1):
-        x1, y1 = coords[i]
-        x2, y2 = coords[i + 1]
-        vx = x2 - x1
-        vy = y2 - y1
-        L2 = vx * vx + vy * vy
-        if L2 == 0:
-            continue
-        wx = px - x1
-        wy = py - y1
-        t = (vx * wx + vy * wy) / L2
-        t = 0 if t < 0 else (1 if t > 1 else t)
-        nx = x1 + t * vx
-        ny = y1 + t * vy
-        dist = ((px - nx) ** 2 + (py - ny) ** 2) ** 0.5
-        if dist < best[1]:
-            az = (math.degrees(math.atan2(vx, vy)) + 360.0) % 360.0
-            best = (az, dist, (nx, ny))
-    return best
 
 # ------------------------- Sidepanel (prosjektdata) -------------------------
 
