@@ -7,7 +7,6 @@ import piexif
 from pyproj import Transformer, CRS
 from streamlit_image_coordinates import streamlit_image_coordinates as img_coords
 
-# HEIC/HEIF support (optional)
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
@@ -15,11 +14,10 @@ try:
 except Exception:
     HEIC_OK = False
 
-st.set_page_config(page_title="Geotagging bilder v11.2", layout="wide")
-st.title("Geotagging bilder v11.2")
-st.caption("v11.2 • Hjørnepunkter tydeligere i kart (toggle + størrelse) • + alt fra v11.1: hjørnepunkter i kart, 2‑klikk orientering, EXIF, CRS‑verktøy")
+st.set_page_config(page_title="Geotagging bilder v11.3", layout="wide")
+st.title("Geotagging bilder v11.3")
+st.caption("v11.3 • Hjørnepunkter: mye mindre mulig, valg av etikett (idx/punktnavn), linjebredde-justering • + alt fra v11.2")
 
-# ---------- helpers ----------
 def deg_to_dms_rational(dd):
     sign = 1 if dd >= 0 else -1
     dd = abs(dd)
@@ -186,7 +184,6 @@ def base_id(s, delims="-_ ./"):
         if d in s: return s.split(d,1)[0].strip().upper()
     return s.upper()
 
-# ---- Lines loaders ----
 def _parse_numbers_list(txt):
     if not txt: return []
     parts = str(txt).strip().replace(",", " ").split()
@@ -312,7 +309,6 @@ def nearest_heading_on_polyline(coords, pt):
             best=(az, dist, (nx,ny))
     return best
 
-# ---------- Sidebar (project) ----------
 with st.sidebar:
     st.header("Prosjektdata (gjelder alle faner)")
 
@@ -461,7 +457,6 @@ with st.sidebar:
     st.session_state["ADD_E"] = add_e
     st.session_state["ADD_N"] = add_n
 
-# ---------- Core orientation ----------
 def heading_from_lines(E,N):
     lines = st.session_state.get("LINES_LIST")
     epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
@@ -515,7 +510,6 @@ def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None, 
 
     return E, N, Alt, (_wrap_deg(hd) if _is_valid_number(hd) else None), center_hint, line_h, dist
 
-# ---------- Tabs ----------
 tabA, tabC, tabD = st.tabs(["A) Batch geotagg", "C) Manuell + 2-klikk", "D) Kart"])
 
 with tabA:
@@ -693,7 +687,6 @@ with tabC:
                 im_prev = im0
             st.image(im_prev, caption=f"Forhåndsvisning – heading={show_hd if show_hd is not None else '—'}°", use_column_width=True)
 
-            # --- 2-klikk orientering ---
             with st.expander("Orienter med 2 hjørner (klikk i bildet)"):
                 pts_df = st.session_state.get("POINTS_DF")
                 delims_val = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
@@ -771,14 +764,14 @@ with tabC:
         try:
             import pydeck as pdk
             if E0 is not None and N0 is not None:
-                # UI for corner visibility/size
                 show_corners = st.checkbox("Vis hjørnepunkter i kartet", value=True, key="C_show_corners")
-                corner_size = st.slider("Størrelse på hjørnepunkter", 4, 18, 12, key="C_corner_size")
+                corner_size = st.slider("Størrelse på hjørnepunkter", 1, 20, 4, key="C_corner_size")
+                line_width = st.slider("Linjebredde (VA/EL-linjer)", 1, 8, 2, key="C_line_width")
+                label_mode = st.selectbox("Hjørne-etikett", ["idx", "punktnavn", "ingen"], index=0, key="C_corner_label")
 
                 lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
                 use_heading = st.session_state["MANUAL_HEADINGS"].get(sel, show_hd)
                 layers=[]
-                # centers
                 centers_df = st.session_state.get("CENTERS_DF")
                 if centers_df is not None and not centers_df.empty:
                     tr_pts = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
@@ -789,7 +782,6 @@ with tabC:
                     try:
                         layers.append(pdk.Layer("TextLayer", tmp, get_position='[lon, lat]', get_text="base_id", get_size=12, get_color=[0,0,0], get_angle=0, get_alignment_baseline="bottom"))
                     except Exception: pass
-                # lines
                 lines = st.session_state.get("LINES_LIST")
                 epsg_lin = st.session_state.get("LINES_EPSG", 25832)
                 if lines:
@@ -799,8 +791,7 @@ with tabC:
                     else:
                         def to_wgs_path(coords): return [[x,y] for (x,y) in coords]
                     paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
-                    layers.append(pdk.Layer("PathLayer", paths, get_path="path", get_width=2, get_color=[80,80,200]))
-                # corner points for selected base
+                    layers.append(pdk.Layer("PathLayer", paths, get_path="path", get_width=line_width, get_color=[80,80,200]))
                 if show_corners:
                     pts_all = st.session_state.get("POINTS_DF")
                     delims_val2 = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
@@ -821,12 +812,19 @@ with tabC:
                                 grp = grp.assign(lon=[p[0] if p else None for p in ll], lat=[p[1] if p else None for p in ll])
                                 grp = grp.dropna(subset=["lon","lat"]).reset_index(drop=True)
                                 grp["idx"] = grp.index
-                                grp["color"] = [[0,255,0]]*len(grp)  # bright lime
+                                sobj_col = cols_all["sobj"] if cols_all["sobj"] else None
+                                if label_mode == "punktnavn" and sobj_col and sobj_col in grp.columns:
+                                    grp["_label"] = grp[sobj_col].astype(str)
+                                elif label_mode == "idx":
+                                    grp["_label"] = grp["idx"].astype(str)
+                                else:
+                                    grp["_label"] = ""
+                                grp["color"] = [[0,255,0]]*len(grp)
                                 layers.append(pdk.Layer("ScatterplotLayer", grp, get_position='[lon, lat]', get_radius=corner_size, get_fill_color='color', pickable=True))
                                 try:
-                                    layers.append(pdk.Layer("TextLayer", grp, get_position='[lon, lat]', get_text="idx", get_size=14, get_color=[0,120,0], get_angle=0, get_alignment_baseline="top"))
+                                    if label_mode != "ingen":
+                                        layers.append(pdk.Layer("TextLayer", grp, get_position='[lon, lat]', get_text="_label", get_size=12, get_color=[0,120,0], get_angle=0, get_alignment_baseline="top"))
                                 except Exception: pass
-                # arrow
                 if _is_valid_number(use_heading):
                     L=5.0; rad=math.radians(use_heading)
                     E1 = E0 + math.sin(rad)*L; N1 = N0 + math.cos(rad)*L
@@ -874,6 +872,7 @@ with tabC:
 
 with tabD:
     st.subheader("D) Kart – senterpunkter og linjer")
+    line_width_D = st.slider("Linjebredde (oversiktskart)", 1, 8, 1, key="D_line_width")
     centers_df = st.session_state.get("CENTERS_DF")
     lines = st.session_state.get("LINES_LIST")
     try:
@@ -901,7 +900,7 @@ with tabD:
             else:
                 def to_wgs_path(coords): return [[x,y] for (x,y) in coords]
             paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
-            layers.append(pdk.Layer("PathLayer", paths, get_path="path", get_width=2, get_color=[80,80,200]))
+            layers.append(pdk.Layer("PathLayer", paths, get_path="path", get_width=line_width_D, get_color=[80,80,200]))
         else:
             st.info("Ingen linjer lastet eller tolket fra filen.")
 
@@ -910,4 +909,4 @@ with tabD:
         st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
 
 st.markdown("---")
-st.caption("v11.2 • Hjørnepunkter tydeligere i kart (toggle + størrelse) • EXIF WGS84, LandXML/GeoJSON, manuell heading, 2‑klikk, CRS-verktøy")
+st.caption("v11.3 • Hjørneetiketter og linjebredde • EXIF WGS84, LandXML/GeoJSON, manuell heading, 2‑klikk, CRS‑verktøy")
