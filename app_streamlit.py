@@ -593,42 +593,7 @@ with st.sidebar:
                 st.warning("Ingen linjer ble tolket fra fila (prøv GeoJSON-eksport eller en annen XML/LandXML).")
         except Exception as e:
             st.exception(e)
-                # --- helper: nærmeste retning på en polyline sett fra et punkt ---
-                def nearest_heading_on_polyline(coords, pt):
-                    """
-                    coords: liste [(E,N), ...]
-                    pt: (E,N)
-                    return: (heading_deg, dist, (projE, projN))
-                    """
-                    if not coords or len(coords) < 2 or pt is None:
-                        return (None, None, None)
 
-                    px, py = pt
-                    best_hd = None
-                    best_dist = float("inf")
-                    best_proj = None
-
-                    for i in range(len(coords) - 1):
-                        x1, y1 = coords[i]
-                        x2, y2 = coords[i + 1]
-                        vx, vy = (x2 - x1), (y2 - y1)
-                        L2 = vx * vx + vy * vy
-                        if L2 <= 0:
-                            continue
-
-                        wx, wy = (px - x1), (py - y1)
-                        t = (vx * wx + vy * wy) / L2
-                        if t < 0:   t = 0
-                        if t > 1:   t = 1
-
-                        nx, ny = (x1 + t * vx), (y1 + t * vy)
-                        dist = ((px - nx) ** 2 + (py - ny) ** 2) ** 0.5
-                        if dist < best_dist:
-                            # heading langs segment (E->N = x->y)
-                            hd = (math.degrees(math.atan2(vx, vy)) + 360.0) % 360.0
-                            best_hd, best_dist, best_proj = hd, dist, (nx, ny)
-
-                    return best_hd, best_dist, best_proj
 
     st.subheader("Globale valg")
     draw_arrow_global = st.checkbox("Tegn nordpil på bilder", value=True, key="SB_draw_arrow")
@@ -667,6 +632,43 @@ with st.sidebar:
     st.session_state["ADD_N"] = add_n
 
 # ------------------------- Felles heading/posisjon -------------------------
+
+
+def nearest_heading_on_polyline(coords, pt):
+    """
+    coords: liste [(E,N), ...]
+    pt: (E,N)
+    return: (heading_deg, dist, (projE, projN))
+    """
+    if not coords or len(coords) < 2 or pt is None:
+        return (None, None, None)
+
+    px, py = pt
+    best_hd = None
+    best_dist = float("inf")
+    best_proj = None
+
+    for i in range(len(coords) - 1):
+        x1, y1 = coords[i]
+        x2, y2 = coords[i + 1]
+        vx, vy = (x2 - x1), (y2 - y1)
+        L2 = vx * vx + vy * vy
+        if L2 <= 0:
+            continue
+
+        wx, wy = (px - x1), (py - y1)
+        t = (vx * wx + vy * wy) / L2
+        if t < 0:   t = 0
+        if t > 1:   t = 1
+
+        nx, ny = (x1 + t * vx), (y1 + t * vy)
+        dist = ((px - nx) ** 2 + (py - ny) ** 2) ** 0.5
+        if dist < best_dist:
+            # heading langs segment (E->N = x->y)
+            hd = (math.degrees(math.atan2(vx, vy)) + 360.0) % 360.0
+            best_hd, best_dist, best_proj = hd, dist, (nx, ny)
+
+    return best_hd, best_dist, best_proj
 
 def heading_from_lines(E, N):
     """
