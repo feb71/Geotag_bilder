@@ -1314,10 +1314,87 @@ with tabD:
             else:
                 def to_wgs_path(coords):
                     return [[x, y] for (x, y) in coords]
-            paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
+                      paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
             layers.append(
                 pdk.Layer(
                     "PathLayer",
                     paths,
                     get_path="path",
-                    get_width=line_width
+                    get_width=line_width_D,      # NB: riktig variabelnavn
+                    width_units="pixels",
+                    width_min_pixels=0,
+                    get_color=[80, 80, 200],
+                )
+            )
+        else:
+            st.info("Ingen linjer lastet eller tolket fra filen.")
+
+        # Hjørnepunkter med etiketter (idx) – vis i kartet
+        pts_all = st.session_state.get("POINTS_DF")
+        delims_val2 = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
+        picked_any = (centers_df["base_id"].iloc[0] if centers_df is not None and not centers_df.empty else None)
+        if pts_all is not None and picked_any:
+            cols_all = detect_columns(pts_all)
+            if cols_all["sobj"] and cols_all["east"] and cols_all["north"]:
+                tmpP = pts_all.copy()
+                tmpP["_base"] = tmpP[cols_all["sobj"]].astype(str).map(lambda s: base_id(s, delims_val2))
+                tr_tmp = Transformer.from_crs(st.session_state.get("POINTS_EPSG", 25832), 4326, always_xy=True)
+
+                def _to_xy(e, n):
+                    e2 = parse_float_maybe_comma(e)
+                    n2 = parse_float_maybe_comma(n)
+                    if e2 is None or n2 is None:
+                        return None
+                    x, y = tr_tmp.transform(e2, n2)
+                    return (x, y)
+
+                ll = [_to_xy(e, n) for e, n in zip(tmpP[cols_all["east"]], tmpP[cols_all["north"]])]
+                tmpP = tmpP.assign(
+                    lon=[p[0] if p else None for p in ll],
+                    lat=[p[1] if p else None for p in ll],
+                ).dropna(subset=["lon", "lat"]).reset_index(drop=True)
+                tmpP["idx"] = tmpP.groupby("_base").cumcount()
+                tmpP["color"] = [[0, 255, 0]] * len(tmpP)
+
+                layers.append(
+                    pdk.Layer(
+                        "ScatterplotLayer",
+                        tmpP,
+                        get_position='[lon, lat]',
+                        get_radius=2,   # piksler
+                        radius_units="pixels",
+                        radius_min_pixels=0,
+                        get_fill_color='color',
+                        pickable=True,
+                    )
+                )
+                if label_corners:
+                    try:
+                        layers.append(
+                            pdk.Layer(
+                                "TextLayer",
+                                tmpP,
+                                get_position='[lon, lat]',
+                                get_text="idx",
+                                get_size=10,
+                                get_color=[0, 120, 0],
+                                get_angle=0,
+                                get_alignment_baseline="top",
+                            )
+                        )
+                    except Exception:
+                        pass
+
+        st.pydeck_chart(
+            pdk.Deck(
+                map_style=None,
+                layers=layers,
+                initial_view_state=view_state,
+            ),
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
+
+st.markdown("---")
+st.caption("v11.8 • Kart-rotasjon (tegn/drag) • 'N'-størrelse • Tab B (målebok) • etiketter for hjørner/senter • EXIF WGS84")
