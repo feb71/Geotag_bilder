@@ -1314,7 +1314,7 @@ with tabD:
             else:
                 def to_wgs_path(coords):
                     return [[x, y] for (x, y) in coords]
-                      paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
+                    paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
             layers.append(
                 pdk.Layer(
                     "PathLayer",
