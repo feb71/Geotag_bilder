@@ -1055,6 +1055,16 @@ with tabC:
     show_center_lbl = st.checkbox("Etikett på kum-senter (base_id)", value=True)
     show_corner_lbl = st.checkbox("Etikett på hjørner (idx)", value=False)
 
+    m = folium.Map(
+    location=[lat0, lon0],
+    zoom_start=19,
+    tiles=None,              # vi legger inn egne lag under
+    control_scale=True,
+    prefer_canvas=True,      # <— viktig for sub-1 px
+    max_zoom=23              # <— la kartet få gå dypere
+)
+
+
     if centers_dict:
         options = sorted(list(centers_dict.keys()))
         picked_label_C = st.selectbox("Velg kum/S_OBJID", options, key="C_pick_label")
@@ -1383,7 +1393,16 @@ with tabD:
         pass
 
     # Start folium-kart
-    m = folium.Map(location=[lat0, lon0], zoom_start=18, tiles="OpenStreetMap", control_scale=True)
+    
+    m = folium.Map(
+    location=[lat0, lon0],
+    zoom_start=19,
+    tiles=None,              # vi legger inn egne lag under
+    control_scale=True,
+    prefer_canvas=True,      # <— viktig for sub-1 px
+    max_zoom=23              # <— la kartet få gå dypere
+)
+
 
     # ---------- Linjer (VA/EL) ----------
     fg_lines = folium.FeatureGroup(name="Linjer (VA/EL)").add_to(m)
