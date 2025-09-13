@@ -593,6 +593,42 @@ with st.sidebar:
                 st.warning("Ingen linjer ble tolket fra fila (prøv GeoJSON-eksport eller en annen XML/LandXML).")
         except Exception as e:
             st.exception(e)
+                # --- helper: nærmeste retning på en polyline sett fra et punkt ---
+                def nearest_heading_on_polyline(coords, pt):
+                    """
+                    coords: liste [(E,N), ...]
+                    pt: (E,N)
+                    return: (heading_deg, dist, (projE, projN))
+                    """
+                    if not coords or len(coords) < 2 or pt is None:
+                        return (None, None, None)
+
+                    px, py = pt
+                    best_hd = None
+                    best_dist = float("inf")
+                    best_proj = None
+
+                    for i in range(len(coords) - 1):
+                        x1, y1 = coords[i]
+                        x2, y2 = coords[i + 1]
+                        vx, vy = (x2 - x1), (y2 - y1)
+                        L2 = vx * vx + vy * vy
+                        if L2 <= 0:
+                            continue
+
+                        wx, wy = (px - x1), (py - y1)
+                        t = (vx * wx + vy * wy) / L2
+                        if t < 0:   t = 0
+                        if t > 1:   t = 1
+
+                        nx, ny = (x1 + t * vx), (y1 + t * vy)
+                        dist = ((px - nx) ** 2 + (py - ny) ** 2) ** 0.5
+                        if dist < best_dist:
+                            # heading langs segment (E->N = x->y)
+                            hd = (math.degrees(math.atan2(vx, vy)) + 360.0) % 360.0
+                            best_hd, best_dist, best_proj = hd, dist, (nx, ny)
+
+                    return best_hd, best_dist, best_proj
 
     st.subheader("Globale valg")
     draw_arrow_global = st.checkbox("Tegn nordpil på bilder", value=True, key="SB_draw_arrow")
@@ -633,32 +669,42 @@ with st.sidebar:
 # ------------------------- Felles heading/posisjon -------------------------
 
 def heading_from_lines(E, N):
-    lines = st.session_state.get("LINES_LIST")
+    """
+    Slår opp nærmeste linjesegment, returnerer (heading_deg, avstand).
+    Reprojiserer linjer til punkt-CRS ved behov og ignorerer tomme features.
+    """
+    lines = st.session_state.get("LINES_LIST") or []
+    if not lines:
+        return (None, None)
+
     epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
     epsg_lin = st.session_state.get("LINES_EPSG", 25832)
     buf = st.session_state.get("BUFFER_M", 2.0)
-    if not lines:
-        return (None, None)
-    # reproj linjer til punktenes EPSG
+
+    # reprojiser linjer til samme CRS som punktene
     if epsg_lin != epsg_pts:
         tr = Transformer.from_crs(epsg_lin, epsg_pts, always_xy=True)
         def reproj(coords):
-            return [tuple(tr.transform(x, y)) for x, y in coords]
-        use = [{"coords": reproj(L["coords"]), "objtype": L.get("objtype")} for L in lines]
+            return [tuple(tr.transform(x, y)) for (x, y) in coords]
+        use = [{"coords": reproj(L.get("coords", [])), "objtype": L.get("objtype")}
+               for L in lines if isinstance(L, dict) and L.get("coords")]
     else:
-        use = lines
+        use = [L for L in lines if isinstance(L, dict) and L.get("coords")]
 
-    best = (None, float("inf"))
+    if not use:
+        return (None, None)
+
+    best_hd, best_dist = None, float("inf")
     for L in use:
         hd, dist, _ = nearest_heading_on_polyline(L["coords"], (E, N))
-        if dist is None:
-            continue
-        if dist < best[1]:
-            best = (hd, dist)
-    hd, dist = best
-    if dist is None:
+        if dist is not None and dist < best_dist:
+            best_hd, best_dist = hd, dist
+
+    if best_dist == float("inf"):
         return (None, None)
-    return (hd if dist <= buf else None), dist
+
+    return (best_hd if best_dist <= buf else None), best_dist
+
 
 def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None, manual_override=None):
     centers = st.session_state.get("CENTERS_DICT") or {}
