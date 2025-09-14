@@ -1119,165 +1119,221 @@ with tabC:
 
             # ---------- Kart (try/except for å vise feil) ----------
 with st.expander("Orienter i KART (klikk eller tegn/drag linje)", expanded=True):
+    import math
+    from pyproj import Transformer
+    import folium
+    from folium.plugins import Draw, Fullscreen
+    from streamlit_folium import st_folium
+    import streamlit.components.v1 as components  # korrekt fallback-import
+
+    # ------- hjelpefunksjoner -------
+    def is_finite_xy(x, y):
+        try:
+            return math.isfinite(float(x)) and math.isfinite(float(y))
+        except Exception:
+            return False
+
+    def safe_EN_to_latlon(E, N, epsg_src):
+        """Trygg transform: returner (lat, lon) eller None."""
+        try:
+            tr = Transformer.from_crs(int(epsg_src), 4326, always_xy=True)
+            lon, lat = tr.transform(float(E), float(N))
+            return (lat, lon) if is_finite_xy(lon, lat) else None
+        except Exception:
+            return None
+
+    # ------- guard: krever senter -------
     if E0 is None or N0 is None:
         st.warning("Mangler E/N for kum-senter.")
     else:
-        try:
-            # Valg for å isolere feilen
-            show_lines  = st.checkbox("Vis VA/EL-linjer", value=False, key="C_show_lines")
-            show_points = st.checkbox("Vis hjørnepunkter", value=True,  key="C_show_pts")
-            debug_info  = st.checkbox("Debug (vis EPSG og antall)", value=False, key="C_dbg")
+        # toggles for feilsøking
+        show_lines  = st.checkbox("Vis VA/EL-linjer", value=False, key=f"C_show_lines_{picked_label_C}")
+        show_points = st.checkbox("Vis hjørnepunkter", value=True,  key=f"C_show_pts_{picked_label_C}")
+        debug_info  = st.checkbox("Debug (vis EPSG, senter mm.)", value=True, key=f"C_dbg_{picked_label_C}")
 
-            lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
-            base_hd = float(st.session_state["MANUAL_HEADINGS"].get(sel, hd if _is_valid_number(hd) else 0.0) or 0.0)
-            Lm  = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key="C_line_len")
-            adj = st.slider("Finjustering (°)",   -180, 180, 0,   1,   key="C_line_adj")
+        # finn startpos (med fallback)
+        s = safe_EN_to_latlon(E0, N0, epsg_pts)
+        debug_msgs = []
+        if s is None:
+            debug_msgs.append(f"Kunne ikke transformere E/N ({E0}, {N0}) fra EPSG:{epsg_pts} – bruker Oslo fallback.")
+            lat0, lon0 = 59.91, 10.75
+        else:
+            lat0, lon0 = s
 
-            # Minimal kart – vises uansett
-            m = folium.Map(location=[lat0, lon0], zoom_start=19,
-                           tiles=None, control_scale=True,
-                           prefer_canvas=True, max_zoom=23)
-            folium.TileLayer(
-                tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                attr="© OpenStreetMap contributors", name="OSM", max_zoom=19
-            ).add_to(m)
-            folium.TileLayer(
-                tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-                attr="Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
-                name="Esri imagery", max_zoom=23
-            ).add_to(m)
-            folium.LayerControl(collapsed=False).add_to(m)
-            Fullscreen(position="topleft", title="Fullskjerm", title_cancel="Avslutt",
-                       force=True, force_separate_button=True).add_to(m)
+        # ------- bygg kartet (alltid) -------
+        m = folium.Map(location=[lat0, lon0], zoom_start=19,
+                       tiles=None, control_scale=True,
+                       prefer_canvas=True, max_zoom=23)
+        folium.TileLayer(
+            tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+            attr="© OpenStreetMap contributors", name="OSM", max_zoom=19
+        ).add_to(m)
+        folium.TileLayer(
+            tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            attr="Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+            name="Esri imagery", max_zoom=23
+        ).add_to(m)
+        folium.LayerControl(collapsed=False).add_to(m)
+        Fullscreen(position="topleft", title="Fullskjerm", title_cancel="Avslutt",
+                   force=True, force_separate_button=True).add_to(m)
 
-            # Kum-senter
-            folium.CircleMarker([lat0, lon0], radius=float(center_size_px), color="#0096ff",
-                                fill=True, fill_opacity=0.9,
-                                tooltip=picked_label_C if show_center_lbl else None).add_to(m)
+        # kum-senter
+        folium.CircleMarker([lat0, lon0], radius=float(center_size_px), color="#0096ff",
+                            fill=True, fill_opacity=0.9,
+                            tooltip=picked_label_C if show_center_lbl else None).add_to(m)
 
-            # (A) LINJER – valgfritt
+        # ------- linjer (valgfritt) -------
+        if show_lines:
             lines_list = st.session_state.get("LINES_LIST") or []
             epsg_lin   = st.session_state.get("LINES_EPSG", 25832)
-
-            def to_wgs_list_C(coords, src_epsg):
-                if src_epsg == 4326:      # (lon,lat) -> (lat,lon) for Leaflet
-                    return [(c[1], c[0]) for c in coords]
-                trL = Transformer.from_crs(src_epsg, 4326, always_xy=True)
-                out = []
-                for (x, y) in coords:
-                    lon, lat = trL.transform(x, y)
-                    out.append((lat, lon))
-                return out
-
-            if show_lines and lines_list:
-                try:
-                    fg_lines = folium.FeatureGroup(name="Linjer (VA/EL)").add_to(m)
-                    for L in lines_list:
-                        coords = L.get("coords") or []
-                        if len(coords) < 2:
-                            continue
-                        path_latlon = to_wgs_list_C(coords, epsg_lin)
-                        folium.PolyLine(path_latlon, color="#5050C8",
+            drew_any   = False
+            try:
+                trL = (None if int(epsg_lin) == 4326
+                       else Transformer.from_crs(int(epsg_lin), 4326, always_xy=True))
+                fg_lines = folium.FeatureGroup(name="Linjer (VA/EL)").add_to(m)
+                for L in lines_list:
+                    coords = L.get("coords") or []
+                    if len(coords) < 2:
+                        continue
+                    path = []
+                    for (E, N) in coords:
+                        if trL is None:  # coords antas (lon, lat)
+                            latlon = (N, E) if is_finite_xy(E, N) else None
+                        else:
+                            try:
+                                lon, lat = trL.transform(float(E), float(N))
+                                latlon = (lat, lon) if is_finite_xy(lon, lat) else None
+                            except Exception:
+                                latlon = None
+                        if latlon:
+                            path.append(latlon)
+                    if len(path) >= 2:
+                        folium.PolyLine(path, color="#5050C8",
                                         weight=float(line_width_px), opacity=0.9,
                                         tooltip=L.get("objtype") or "linje").add_to(fg_lines)
-                except Exception as e:
-                    st.error(f"Linjelag feilet: {e}")
+                        drew_any = True
+                if not drew_any:
+                    debug_msgs.append("Ingen linjesegmenter kunne tegnes (feil EPSG eller ugyldige koordinater?).")
+            except Exception as e:
+                debug_msgs.append(f"Linjelag feilet: {e}")
 
-            # (B) HJØRNER – valgfritt
-            if show_points:
-                pts_df = st.session_state.get("POINTS_DF")
-                delims_val = st.session_state.get("SB_delims", "-_ ./")
-                if pts_df is not None:
-                    cols = detect_columns(pts_df)
-                    if cols["sobj"] and cols["east"] and cols["north"]:
-                        tmp = pts_df.copy()
-                        tmp["_base"] = tmp[cols["sobj"]].astype(str).map(lambda s: base_id(s, delims_val))
-                        grp = tmp[tmp["_base"] == base_id(picked_label_C, delims_val)].reset_index(drop=True)
-                        fg_pts = folium.FeatureGroup(name="Hjørner").add_to(m)
-                        fg_lbl = folium.FeatureGroup(name="Hjørne-etiketter").add_to(m) if show_corner_lbl else None
-                        for i, r in grp.iterrows():
-                            e = parse_float_maybe_comma(r[cols["east"]]); n = parse_float_maybe_comma(r[cols["north"]])
-                            if not (_is_valid_number(e) and _is_valid_number(n)):
-                                continue
-                            lt, ln = transform_EN_to_wgs84(e, n, epsg_pts)
-                            folium.CircleMarker([lt, ln], radius=float(corner_size_px),
-                                                color="#00cc00", fill=True, fill_opacity=0.9,
-                                                tooltip=f"hj[{i}]").add_to(fg_pts)
-                            if fg_lbl is not None:
-                                folium.Marker(
-                                    location=(lt, ln),
-                                    icon=folium.DivIcon(html=f"""
-                                        <div style="font-size:12px;color:#0a0;
-                                                   background:rgba(255,255,255,0.7);
-                                                   padding:1px 3px;border-radius:3px;
-                                                   transform: translate(6px, -6px);">
-                                            hj[{i}]
-                                        </div>""")
-                                ).add_to(fg_lbl)
+        # ------- hjørnepunkter (valgfritt) -------
+        if show_points:
+            pts_df = st.session_state.get("POINTS_DF")
+            delims_val = st.session_state.get("SB_delims", "-_ ./")
+            if pts_df is not None:
+                cols = detect_columns(pts_df)
+                if cols["sobj"] and cols["east"] and cols["north"]:
+                    tmp = pts_df.copy()
+                    tmp["_base"] = tmp[cols["sobj"]].astype(str).map(lambda s: base_id(s, delims_val))
+                    grp = tmp[tmp["_base"] == base_id(picked_label_C, delims_val)].reset_index(drop=True)
+                    fg_pts = folium.FeatureGroup(name="Hjørner").add_to(m)
+                    fg_lbl = folium.FeatureGroup(name="Hjørne-etiketter").add_to(m) if show_corner_lbl else None
+                    drew_pt = False
+                    for i, r in grp.iterrows():
+                        e = parse_float_maybe_comma(r[cols["east"]])
+                        n = parse_float_maybe_comma(r[cols["north"]])
+                        p = safe_EN_to_latlon(e, n, epsg_pts) if (_is_valid_number(e) and _is_valid_number(n)) else None
+                        if not p:
+                            continue
+                        lt, ln = p
+                        folium.CircleMarker([lt, ln], radius=float(corner_size_px),
+                                            color="#00cc00", fill=True, fill_opacity=0.9,
+                                            tooltip=f"hj[{i}]").add_to(fg_pts)
+                        if fg_lbl is not None:
+                            folium.Marker(
+                                location=(lt, ln),
+                                icon=folium.DivIcon(html=f"""
+                                    <div style="font-size:12px;color:#0a0;
+                                               background:rgba(255,255,255,0.7);
+                                               padding:1px 3px;border-radius:3px;
+                                               transform: translate(6px, -6px);">
+                                        hj[{i}]
+                                    </div>""")
+                            ).add_to(fg_lbl)
+                        drew_pt = True
+                    if not drew_pt:
+                        debug_msgs.append("Fant ingen hjørnepunkter som kunne transformeres/tegnes.")
 
-            # Forhåndslinje
-            def latlon_from_heading(Ec, Nc, hd_deg, length_m):
-                rad = math.radians(hd_deg)
-                E1 = Ec + math.sin(rad) * length_m
-                N1 = Nc + math.cos(rad) * length_m
-                lt, ln = transform_EN_to_wgs84(E1, N1, epsg_pts)
-                return lt, ln
+        # ------- rød forhåndslinje fra heading -------
+        base_hd = float(st.session_state["MANUAL_HEADINGS"].get(sel, hd if _is_valid_number(hd) else 0.0) or 0.0)
+        Lm  = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key=f"C_line_len_{picked_label_C}")
+        adj = st.slider("Finjustering (°)",   -180, 180, 0,   1,   key=f"C_line_adj_{picked_label_C}")
 
-            lt1, ln1 = latlon_from_heading(E0, N0, base_hd + adj, Lm)
-            folium.PolyLine([[lat0, lon0], [lt1, ln1]], color="#c83c3c", weight=5,
-                            tooltip=f"{base_hd+adj:.1f}°").add_to(m)
+        def latlon_from_heading(Ec, Nc, hd_deg, length_m):
+            rad = math.radians(hd_deg)
+            E1 = Ec + math.sin(rad) * length_m
+            N1 = Nc + math.cos(rad) * length_m
+            return safe_EN_to_latlon(E1, N1, epsg_pts)
 
-            Draw(
-                export=True, filename='heading.json', position='topleft',
-                draw_options={'polyline': True, 'polygon': False, 'rectangle': False,
-                              'circle': False, 'marker': True, 'circlemarker': False},
-                edit_options={'edit': True, 'remove': True}
-            ).add_to(m)
-            folium.LatLngPopup().add_to(m)
+        p1 = latlon_from_heading(E0, N0, (base_hd + adj) % 360.0, Lm)
+        if p1:
+            folium.PolyLine([[lat0, lon0], list(p1)], color="#c83c3c", weight=5,
+                            tooltip=f"{(base_hd+adj)%360:.1f}°").add_to(m)
 
-            if debug_info:
-                st.write({
-                    "POINTS_EPSG": epsg_pts,
-                    "LINES_EPSG": epsg_lin,
-                    "antall_linjer": len(lines_list),
-                    "antall_punkter_total": int(st.session_state.get("POINTS_DF").shape[0]) if st.session_state.get("POINTS_DF") is not None else 0,
-                })
+        # tegn/drag i kartet
+        Draw(
+            export=True, filename='heading.json', position='topleft',
+            draw_options={'polyline': True, 'polygon': False, 'rectangle': False,
+                          'circle': False, 'marker': True, 'circlemarker': False},
+            edit_options={'edit': True, 'remove': True}
+        ).add_to(m)
+        folium.LatLngPopup().add_to(m)
 
-            out = st_folium(m, height=520, width=None)
+        # ---- RENDER: unik key pr. kum + bilde + tvangs-fallback ----
+        out = None
+        try:
+            out = st_folium(m, height=520, width=None,
+                            key=f"foliumC_{picked_label_C}_{sel}")
+        except Exception as e:
+            debug_msgs.append(f"st_folium feilet: {e}")
+        if out is None:
+            # vis uansett
+            components.html(m._repr_html_(), height=520, scrolling=False)
 
-            # Utled ny heading (samme som før) ...
-            new_hd = None
-            if out and out.get("last_clicked") is not None:
-                latc, lonc = out["last_clicked"]["lat"], out["last_clicked"]["lng"]
-                tr = Transformer.from_crs(4326, epsg_pts, always_xy=True)
+        if debug_info:
+            st.json({
+                "POINTS_EPSG": epsg_pts,
+                "LINES_EPSG": st.session_state.get("LINES_EPSG", None),
+                "start_latlon": (lat0, lon0),
+                "merknader": debug_msgs,
+            })
+
+        # --- beregn ny heading fra klikk/tegning ---
+        new_hd = None
+        if out and out.get("last_clicked") is not None:
+            latc, lonc = out["last_clicked"]["lat"], out["last_clicked"]["lng"]
+            try:
+                tr = Transformer.from_crs(4326, int(epsg_pts), always_xy=True)
                 Ex, Ny = tr.transform(lonc, latc)
-                dx = Ex - E0; dy = Ny - N0
+                dx = Ex - float(E0); dy = Ny - float(N0)
                 new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
-            if out and out.get("last_active_drawing"):
+            except Exception as e:
+                st.warning(f"Kunne ikke beregne heading fra kartklikk: {e}")
+
+        if out and out.get("last_active_drawing"):
+            try:
                 d = out["last_active_drawing"]; typ = d.get("type")
                 if typ == "polyline" and len(d["geometry"]["coordinates"]) >= 2:
                     lonc, latc = d["geometry"]["coordinates"][-1]
-                    tr = Transformer.from_crs(4326, epsg_pts, always_xy=True)
-                    Ex, Ny = tr.transform(lonc, latc)
-                    dx = Ex - E0; dy = Ny - N0
-                    new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
                 elif typ == "marker":
                     lonc, latc = d["geometry"]["coordinates"]
-                    tr = Transformer.from_crs(4326, epsg_pts, always_xy=True)
+                else:
+                    lonc = latc = None
+                if lonc is not None:
+                    tr = Transformer.from_crs(4326, int(epsg_pts), always_xy=True)
                     Ex, Ny = tr.transform(lonc, latc)
-                    dx = Ex - E0; dy = Ny - N0
+                    dx = Ex - float(E0); dy = Ny - float(N0)
                     new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
+            except Exception as e:
+                st.warning(f"Kunne ikke beregne heading fra tegnet geometri: {e}")
 
-            if _is_valid_number(new_hd):
-                st.info(f"Ny heading fra kart: {new_hd:.1f}°")
-            if st.button("Lagre heading (kart)", key="C_save_map"):
-                final_hd = new_hd if _is_valid_number(new_hd) else (base_hd + adj)
-                st.session_state["MANUAL_HEADINGS"][sel] = float(_wrap_deg(final_hd))
-                st.success(f"Lagret {sel}: {_wrap_deg(final_hd):.1f}°")
-
-        except Exception as e:
-            st.error("Feil ved bygging av kart i Tab C:")
-            st.exception(e)
+        if _is_valid_number(new_hd):
+            st.info(f"Ny heading fra kart: {new_hd:.1f}°")
+        if st.button("Lagre heading (kart)", key=f"C_save_map_{picked_label_C}_{sel}"):
+            final_hd = (new_hd if _is_valid_number(new_hd) else (base_hd + adj)) % 360.0
+            st.session_state["MANUAL_HEADINGS"][sel] = float(final_hd)
+            st.success(f"Lagret {sel}: {final_hd:.1f}°")
 
 
             # ---------- 2-klikk i bildet: beregn heading ----------
