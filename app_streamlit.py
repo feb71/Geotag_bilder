@@ -1039,19 +1039,21 @@ with tabB:
 with tabC:
     st.subheader("C) Manuell pr. bilde + to-klikk / kart")
 
-    # Lokale imports (ok å flytte globalt hvis du vil)
+    # Lokale imports (kan flyttes globalt om ønskelig)
     import folium
-    from folium.plugins import Fullscreen
+    from folium.plugins import Fullscreen, Draw
     from streamlit_folium import st_folium
     from pyproj import Transformer
 
-    centers_dict = st.session_state.get("CENTERS_DICT") or {}
-    epsg_pts     = st.session_state.get("POINTS_EPSG", 25832)
-    draw_arrow   = st.session_state.get("DRAW_ARROW", True)
-    arrow_size   = st.session_state.get("ARROW_SIZE", 120)
-    arrow_col    = st.session_state.get("ARROW_COLOR", (255, 255, 255))
-    arrow_outline= st.session_state.get("ARROW_OUTLINE", (0, 0, 0))
+    centers_dict  = st.session_state.get("CENTERS_DICT") or {}
+    epsg_pts      = st.session_state.get("POINTS_EPSG", 25832)
+    draw_arrow    = st.session_state.get("DRAW_ARROW", True)
+    arrow_size    = st.session_state.get("ARROW_SIZE", 120)
+    n_label_size  = st.session_state.get("N_LABEL_SIZE", 18)  # brukes i andre faner
+    arrow_col     = st.session_state.get("ARROW_COLOR", (255, 255, 255))
+    arrow_outline = st.session_state.get("ARROW_OUTLINE", (0, 0, 0))
 
+    # Velg kum
     if centers_dict:
         options = sorted(list(centers_dict.keys()))
         picked_label_C = st.selectbox("Velg kum/S_OBJID", options, key="C_pick_label")
@@ -1059,15 +1061,15 @@ with tabC:
         picked_label_C = None
         st.warning("Last opp punkter i sidepanelet.")
 
+    # Last bilder
     files_up_C = st.file_uploader(
         "Dra inn bilder (flere)",
-        type=["jpg","jpeg","png","tif","tiff","heic","heif"],
+        type=["jpg", "jpeg", "png", "tif", "tiff", "heic", "heif"],
         accept_multiple_files=True,
-        key="C_files"
+        key="C_files",
     )
 
     if files_up_C and len(files_up_C) > 0 and picked_label_C:
-        # lagringsplass for manuelle headinger
         if "MANUAL_HEADINGS" not in st.session_state:
             st.session_state["MANUAL_HEADINGS"] = {}
         man_dict = st.session_state["MANUAL_HEADINGS"]
@@ -1086,7 +1088,7 @@ with tabC:
             im0 = Image.open(io.BytesIO(payload))
             im0 = normalize_orientation(im0).convert("RGB")
 
-            # Finn kum-senter
+            # Kum-senter
             info = centers_dict.get(picked_label_C, {})
             E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
 
@@ -1095,12 +1097,12 @@ with tabC:
                 picked_label_C, E0, N0, Alt0, None, manual_override=None
             )
 
-            # Manuelt overstyrt heading – hvis finnes
+            # Manuell overstyring hvis satt
             cur_manual = man_dict.get(sel)
             show_hd = cur_manual if _is_valid_number(cur_manual) else hd
             show_hd = apply_heading_calibration(show_hd)
 
-            # Forhåndsvis bilde med evt. nordpil
+            # Forhåndsvis bilde med nordpil
             if draw_arrow and _is_valid_number(show_hd):
                 im_prev = draw_north_arrow(
                     im0.copy(), _wrap_deg(show_hd),
@@ -1112,88 +1114,155 @@ with tabC:
             st.image(
                 im_prev,
                 caption=f"Forhåndsvisning – heading={show_hd if show_hd is not None else '—'}°",
-                use_container_width=True
+                use_container_width=True,
             )
 
-            # ------------------ KART: klikk for heading + hjørnepunkter ------------------
-            with st.expander("Orienter i KART (klikk for å sette nord)", expanded=True):
+            # ------------------ KART: klikk for heading + hjørnepunkter + linjer ------------------
+            with st.expander("Orienter i KART (klikk eller tegn/drag linje)", expanded=True):
                 if E0 is not None and N0 is not None:
-                    # startposisjon i WGS84
                     lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
 
-                    # utgangspunkt for rød forhåndslinje
                     base_hd = man_dict.get(sel, hd if _is_valid_number(hd) else 0.0) or 0.0
                     base_hd = float(base_hd)
 
-                    Lm  = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key="C_line_len")
-                    adj = st.slider("Finjustering (°)",   -180, 180, 0,   1,   key="C_line_adj")
+                    # Kart-kontroller
+                    show_lines     = st.checkbox("Vis VA/EL-linjer", value=True, key="C_show_lines")
+                    line_width_px  = st.slider("Linjebredde (px)", 0.5, 6.0, 2.0, 0.5, key="C_line_w")
+                    Lm             = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key="C_line_len")
+                    adj            = st.slider("Finjustering (°)", -180, 180, 0, 1, key="C_line_adj")
 
-                    # kart
-                    m = folium.Map(location=[lat0, lon0], zoom_start=19,
-                                   tiles="OpenStreetMap", control_scale=True)
-                    Fullscreen(position="topleft", title="Fullskjerm",
-                               title_cancel="Avslutt", force=True,
-                               force_separate_button=True).add_to(m)
+                    # Kart med høy zoom og flere baselag
+                    m = folium.Map(location=[lat0, lon0], zoom_start=20, tiles=None,
+                                   control_scale=True, max_zoom=23)
+                    folium.TileLayer(
+                        tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                        attr="© OpenStreetMap contributors", name="OSM", max_zoom=19
+                    ).add_to(m)
+                    folium.TileLayer(
+                        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                        attr="Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+                        name="Esri imagery", max_zoom=23
+                    ).add_to(m)
+                    folium.TileLayer(
+                        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+                        attr="Esri", name="Esri streets", max_zoom=23
+                    ).add_to(m)
+                    folium.LayerControl(collapsed=False).add_to(m)
+                    Fullscreen(position="topleft", force=True, force_separate_button=True).add_to(m)
 
-                    # kum-senter
+                    # Kum-senter
                     folium.CircleMarker([lat0, lon0], radius=5, color="#0096ff",
                                         fill=True, fill_opacity=0.9,
                                         tooltip=picked_label_C).add_to(m)
 
-                    # ---- HJØRNEPUNKTER I KARTET (for valgt kum) ----
-                    show_corners  = st.checkbox("Vis hjørnepunkter", value=True,
-                                                key=f"C_show_corners_{picked_label_C}")
-                    corner_size   = st.slider("Hjørne-størrelse (px)", 1.0, 12.0, 4.0, 0.5,
-                                              key=f"C_corner_size_{picked_label_C}")
-                    label_corners = st.checkbox("Vis etiketter (idx)", value=True,
-                                                key=f"C_label_corners_{picked_label_C}")
+                    # ---- HJØRNEPUNKTER ----
+                    show_corners   = st.checkbox("Vis hjørnepunkter", value=True,
+                                                 key=f"C_show_corners_{picked_label_C}")
+                    corner_size    = st.slider("Hjørne-størrelse (px)", 0.5, 12.0, 3.0, 0.5,
+                                               key=f"C_corner_size_{picked_label_C}")
+                    label_on       = st.checkbox("Vis etiketter", value=True,
+                                                 key=f"C_label_on_{picked_label_C}")
+                    label_font_px  = st.slider("Etikett skriftstørrelse (px)", 8, 28, 12,
+                                               key=f"C_label_font_{picked_label_C}")
+                    label_dx       = st.slider("Etikett offset X (px)", -40, 40, 8,
+                                               key=f"C_label_dx_{picked_label_C}")
+                    label_dy       = st.slider("Etikett offset Y (px)", -40, 40, -8,
+                                               key=f"C_label_dy_{picked_label_C}")
+                    label_color    = st.color_picker("Etikettfarge", "#008800",
+                                                     key=f"C_label_col_{picked_label_C}")
+                    label_bg_on    = st.checkbox("Hvit bakgrunn på etikett", value=True,
+                                                 key=f"C_label_bg_{picked_label_C}")
+
+                    # Velg attributt for etikett
+                    pts_df = st.session_state.get("POINTS_DF")
+                    avail_attrs = ["idx", "S_OBJID"]
+                    if pts_df is not None:
+                        for c in pts_df.columns:
+                            if c not in avail_attrs:
+                                avail_attrs.append(c)
+                    label_attr = st.selectbox("Etikett-kolonne", avail_attrs, index=0,
+                                              key=f"C_label_attr_{picked_label_C}")
+
+                    def _mk_label_text(row):
+                        if label_attr == "idx":
+                            return f"hj[{int(row['idx'])}]"
+                        val = row.get(label_attr, "")
+                        try:
+                            return str(val) if pd.notna(val) else ""
+                        except Exception:
+                            return str(val)
 
                     if show_corners:
-                        pts_df = st.session_state.get("POINTS_DF")
                         delims_val = st.session_state.get("SB_delims", "-_ ./")
                         if pts_df is not None:
                             cols = detect_columns(pts_df)
                             if cols["sobj"] and cols["east"] and cols["north"]:
                                 tmp = pts_df.copy()
-                                # base-id for å plukke riktig kum
                                 tmp["_base"] = tmp[cols["sobj"]].astype(str).map(
                                     lambda s: base_id(s, delims_val)
                                 )
                                 grp = tmp[tmp["_base"] == base_id(picked_label_C, delims_val)]\
                                       .reset_index(drop=True)
-                                # indekser per kum
                                 grp["idx"] = grp.groupby("_base").cumcount()
 
-                                for i, r in grp.iterrows():
+                                bg_css = "background:rgba(255,255,255,0.85);padding:1px 3px;border-radius:2px;" if label_bg_on else ""
+
+                                for _, r in grp.iterrows():
                                     e = parse_float_maybe_comma(r[cols["east"]])
                                     n = parse_float_maybe_comma(r[cols["north"]])
-                                    if _is_valid_number(e) and _is_valid_number(n):
-                                        lt, ln = transform_EN_to_wgs84(e, n, epsg_pts)
+                                    if not _is_valid_number(e) or not _is_valid_number(n):
+                                        continue
+                                    lt, ln = transform_EN_to_wgs84(e, n, epsg_pts)
 
-                                        folium.CircleMarker(
-                                            [lt, ln],
-                                            radius=float(corner_size),
-                                            color="#00cc00", fill=True, fill_opacity=0.9,
-                                            tooltip=f'hj[{i}] • {r.get("S_OBJID","")}'
+                                    folium.CircleMarker(
+                                        [lt, ln],
+                                        radius=float(corner_size),
+                                        color="#00cc00",
+                                        fill=True, fill_opacity=0.95,
+                                        tooltip=f"idx={int(r['idx'])} • {r.get('S_OBJID','')}"
+                                    ).add_to(m)
+
+                                    if label_on:
+                                        text = _mk_label_text(r)
+                                        html = f"""
+                                            <div style="font-size:{label_font_px}px;color:{label_color};
+                                                        {bg_css} white-space:nowrap;
+                                                        transform: translate({label_dx}px,{label_dy}px);">
+                                                {text}
+                                            </div>"""
+                                        folium.Marker(
+                                            location=(lt, ln),
+                                            icon=folium.DivIcon(html=html)
                                         ).add_to(m)
-
-                                        if label_corners:
-                                            folium.Marker(
-                                                location=(lt, ln),
-                                                icon=folium.DivIcon(html=f"""
-                                                    <div style="font-size:12px;color:#0a0;
-                                                               background:rgba(255,255,255,0.7);
-                                                               padding:1px 3px;border-radius:2px;
-                                                               transform: translate(6px,-6px);">
-                                                        hj[{i}]
-                                                    </div>""")
-                                            ).add_to(m)
                             else:
                                 st.info("Fant ikke S_OBJID/Øst/Nord-kolonner i punktfilen.")
                         else:
                             st.info("Ingen punktfil lastet i sidepanelet.")
 
-                    # rød forhåndslinje (heading-preview)
+                    # ---- VA/EL-LINJER (valgfritt) ----
+                    if show_lines:
+                        lines_list = st.session_state.get("LINES_LIST") or []
+                        epsg_lin   = st.session_state.get("LINES_EPSG", 25832)
+                        def to_wgs_list_C(coords, src_epsg):
+                            if src_epsg == 4326:
+                                return [(y, x) for (x, y) in [(c[0], c[1]) for c in coords]]
+                            trL = Transformer.from_crs(src_epsg, 4326, always_xy=True)
+                            out = []
+                            for (x, y) in coords:
+                                lon, lat = trL.transform(x, y)
+                                out.append((lat, lon))
+                            return out
+                        if lines_list:
+                            fg_lines = folium.FeatureGroup(name="Linjer (VA/EL)").add_to(m)
+                            for L in lines_list:
+                                path_latlon = to_wgs_list_C(L["coords"], epsg_lin)
+                                folium.PolyLine(
+                                    path_latlon,
+                                    color="#5050C8", weight=float(line_width_px), opacity=0.9,
+                                    tooltip=L.get("objtype") or "linje"
+                                ).add_to(fg_lines)
+
+                    # Rød forhåndslinje (heading-preview)
                     def latlon_from_heading(Ec, Nc, hd_deg, length_m):
                         rad = math.radians(hd_deg)
                         E1  = Ec + math.sin(rad) * length_m
@@ -1203,16 +1272,24 @@ with tabC:
 
                     lt1, ln1 = latlon_from_heading(E0, N0, base_hd + adj, Lm)
                     folium.PolyLine([[lat0, lon0], [lt1, ln1]],
-                                    color="#c83c3c", weight=5).add_to(m)
+                                    color="#c83c3c", weight=5,
+                                    tooltip=f"{base_hd+adj:.1f}°").add_to(m)
                     folium.Marker([lt1, ln1], draggable=False,
                                   icon=folium.Icon(color="red", icon="compass")).add_to(m)
+
+                    # Tegn/drag i kart
+                    draw = Draw(
+                        export=False, position='topleft',
+                        draw_options={'polyline': True, 'polygon': False, 'rectangle': False,
+                                      'circle': False, 'marker': True, 'circlemarker': False},
+                        edit_options={'edit': True, 'remove': True},
+                    )
+                    draw.add_to(m)
                     folium.LatLngPopup().add_to(m)
 
-                    # unik key pr. kum + bilde => unngår cache/opptegningstrøbbel
-                    out = st_folium(m, height=440, width=None,
-                                    key=f"C_map_{picked_label_C}_{sel}")
+                    out = st_folium(m, height=460, width=None, key=f"C_map_{picked_label_C}_{sel}")
 
-                    # beregn heading fra klikk i kart
+                    # Sett heading fra klikk/tegning
                     new_hd = None
                     if out and out.get("last_clicked") is not None:
                         latc, lonc = out["last_clicked"]["lat"], out["last_clicked"]["lng"]
@@ -1220,9 +1297,8 @@ with tabC:
                         Ex, Ny = tr.transform(lonc, latc)
                         dx = Ex - E0; dy = Ny - N0
                         new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
-                        st.info(f"Ny heading fra kart-klikk: {new_hd:.1f}°")
+                        st.info(f"Ny heading fra kart: {new_hd:.1f}°")
 
-                    # lagre
                     if st.button("Lagre heading (kart)", key="C_save_map"):
                         final_hd = new_hd if _is_valid_number(new_hd) else (base_hd + adj)
                         st.session_state["MANUAL_HEADINGS"][sel] = float(_wrap_deg(final_hd))
@@ -1244,7 +1320,9 @@ with tabC:
                         tmp["_base"] = tmp[cols["sobj"]].astype(str).map(lambda s: base_id(s, delims_val))
                         grp = tmp[tmp["_base"] == base_lbl]
                         if len(grp) >= 2:
-                            corners_df = grp.rename(columns={cols["east"]: "E", cols["north"]: "N"}).reset_index(drop=True)
+                            corners_df = grp.rename(
+                                columns={cols["east"]: "E", cols["north"]: "N"}
+                            ).reset_index(drop=True)
 
                 if corners_df is None or len(corners_df) < 2:
                     st.info("Finner ikke minst 2 hjørner for denne kummen i opplastet punktfil.")
@@ -1259,7 +1337,7 @@ with tabC:
 
                     st.caption("Klikk først Hjørne A, deretter Hjørne B i bildet:")
                     click_key = f"C_clicks_{picked_label_C}_{sel}"
-                    coords = img_coords(im0, key=click_key)  # <- din eksisterende funksjon
+                    coords = img_coords(im0, key=click_key)  # eksisterende helper
                     if coords:
                         clicks = st.session_state.get(click_key + "_list", [])
                         if (not clicks) or (clicks and (clicks[-1] != (coords["x"], coords["y"]))):
@@ -1280,9 +1358,7 @@ with tabC:
                     if _is_valid_number(EA) and _is_valid_number(NA) and _is_valid_number(EB) and _is_valid_number(NB):
                         if len(clicks) == 2:
                             (xA, yA), (xB, yB) = clicks
-                            # virkelig azimut mellom hjørner (meter i E/N)
                             az_real = (math.degrees(math.atan2(EB - EA, NB - NA)) + 360.0) % 360.0
-                            # retning i bildekoordinater (x høyre, y ned)
                             az_img  = (math.degrees(math.atan2(xB - xA, -(yB - yA))) + 360.0) % 360.0
                             hd2 = (az_real - az_img) % 360.0
                             st.success(f"Beregnet heading = {hd2:.1f}° (lagres som manuell)")
@@ -1366,7 +1442,7 @@ with tabC:
                     "Last ned ZIP (Tab C)",
                     data=zout_mem.getvalue(),
                     file_name="geotag_manual.zip",
-                    mime="application/zip"
+                    mime="application/zip",
                 )
                 st.success(f"Skrev {processed} bilder.")
             if skipped:
