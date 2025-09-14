@@ -1039,8 +1039,8 @@ with tabB:
 with tabC:
     st.subheader("C) Manuell pr. bilde + to-klikk / kart")
 
-    # Lokale imports (trygt å ha her – unngår konflikt med andre faner)
-    import io, zipfile, math
+    # Lokale imports
+    import io, os, zipfile, math
     import pandas as pd
     from PIL import Image
     import folium
@@ -1048,6 +1048,7 @@ with tabC:
     from streamlit_folium import st_folium
     from pyproj import Transformer
 
+    # Hent fra session
     centers_dict  = st.session_state.get("CENTERS_DICT") or {}
     epsg_pts      = st.session_state.get("POINTS_EPSG", 25832)
     draw_arrow    = st.session_state.get("DRAW_ARROW", True)
@@ -1072,7 +1073,6 @@ with tabC:
     )
 
     if files_up_C and len(files_up_C) > 0 and picked_label_C:
-        # klargjør manuelt-heading-lager
         if "MANUAL_HEADINGS" not in st.session_state:
             st.session_state["MANUAL_HEADINGS"] = {}
         man_dict = st.session_state["MANUAL_HEADINGS"]
@@ -1095,12 +1095,12 @@ with tabC:
             info = centers_dict.get(picked_label_C, {})
             E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
 
-            # Finn evt. heading fra logikk
+            # Default heading fra logikken
             E, N, Alt, hd, cent, line_h, dist = choose_pos_and_heading(
                 picked_label_C, E0, N0, Alt0, None, manual_override=None
             )
 
-            # Manuell overstyring hvis vi allerede har satt en for dette bildet
+            # Manuell overstyring om finnes
             cur_manual = man_dict.get(sel)
             show_hd = cur_manual if _is_valid_number(cur_manual) else hd
             show_hd = apply_heading_calibration(show_hd)
@@ -1117,22 +1117,20 @@ with tabC:
             st.image(
                 im_prev,
                 caption=f"Forhåndsvisning – heading={show_hd if show_hd is not None else '—'}°",
-                use_container_width=True,
+                use_column_width=True,
             )
 
-            # ------------------ KART: klikk for heading + hjørnepunkter + linjer ------------------
+            # ------------------ KART: klikk/tegn for heading + hjørner + VA/EL ------------------
             with st.expander("Orienter i KART (klikk eller tegn/drag linje)", expanded=True):
                 if E0 is not None and N0 is not None:
-                    lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
-
-                    base_hd = man_dict.get(sel, hd if _is_valid_number(hd) else 0.0) or 0.0
-                    base_hd = float(base_hd)
-
                     # Kart-kontroller
                     show_lines     = st.checkbox("Vis VA/EL-linjer", value=True, key="C_show_lines")
                     line_width_px  = st.slider("Linjebredde (px)", 0.5, 6.0, 2.0, 0.5, key="C_line_w")
                     Lm             = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key="C_line_len")
                     adj            = st.slider("Finjustering (°)", -180, 180, 0, 1, key="C_line_adj")
+
+                    # Transform senter til WGS84 for kart
+                    lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
 
                     # Kart (høy zoom, flere bakgrunnslag)
                     m = folium.Map(location=[lat0, lon0], zoom_start=20, tiles=None,
@@ -1153,7 +1151,7 @@ with tabC:
                     folium.LayerControl(collapsed=False).add_to(m)
                     Fullscreen(position="topleft", force=True, force_separate_button=True).add_to(m)
 
-                    # Kum-senter
+                    # Marker kum-senter
                     folium.CircleMarker([lat0, lon0], radius=5, color="#0096ff",
                                         fill=True, fill_opacity=0.9,
                                         tooltip=picked_label_C).add_to(m)
@@ -1241,22 +1239,29 @@ with tabC:
                         else:
                             st.info("Ingen punktfil lastet i sidepanelet.")
 
-                    # ---- VA/EL-LINJER (ytelsesvennlig) ----
+                    # ---- VA/EL-LINJER (ytelsesvennlig + korrekt CRS) ----
                     if show_lines:
                         lines_list = st.session_state.get("LINES_LIST") or []
-                        epsg_lin   = st.session_state.get("LINES_EPSG", 25832)
+                        epsg_lin_session = st.session_state.get("LINES_EPSG", 25832)
 
-                        # Ytelses-kontroller
+                        # EPSG-override i UI (eks: 5110 for NTM10)
+                        epsg_lin = st.number_input(
+                            "EPSG for linjer (override ved behov)",
+                            min_value=2000, max_value=9000, value=int(epsg_lin_session),
+                            help="Sett 5110 for NTM10, 4326 for WGS84 osv.",
+                            key="C_epsg_lin_override",
+                        )
+
+                        # Ytelse
                         limit_by_radius = st.checkbox("Begrens linjer til radius rundt kum", value=True, key="C_limit_lines")
                         radius_m        = st.slider("Radius (m) for linjer", 1, 200, 60, key="C_radius_lines")
-                        max_lines_keep  = st.slider("Maks antall linjer å tegne", 1, 2000, 300, step=50, key="C_max_lines")
+                        max_lines_keep  = st.slider("Maks antall linjer å tegne", 10, 2000, 300, step=10, key="C_max_lines")
                         simplify_step   = st.slider("Tynn ut vertex (hvert N-te punkt)", 1, 20, 3, key="C_simplify_lines")
 
                         def to_wgs_list_C(coords, src_epsg):
-                            # coords = [(E, N), ...] i src_epsg → [(lat, lon), ...]
                             if src_epsg == 4326:
                                 return [(y, x) for (x, y) in [(c[0], c[1]) for c in coords]]
-                            trL = Transformer.from_crs(src_epsg, 4326, always_xy=True)
+                            trL = Transformer.from_crs(int(src_epsg), 4326, always_xy=True)
                             out = []
                             for (x, y) in coords:
                                 lon, lat = trL.transform(x, y)
@@ -1278,17 +1283,30 @@ with tabC:
                                 if d2 < best: best = d2
                             return best
 
+                        # CRS-debug
+                        st.caption(f"CRS debug: punkter EPSG={epsg_pts}, linjer EPSG(session)={int(epsg_lin_session)} (override nå: {int(epsg_lin)})")
+
                         if lines_list:
-                            # Filtrer nær kummen
-                            if limit_by_radius and E0 is not None and N0 is not None:
+                            # Transformér kum-senter til linjenes CRS før radius-sjekk
+                            E0_lin, N0_lin = E0, N0
+                            if _is_valid_number(E0) and _is_valid_number(N0):
+                                try:
+                                    if int(epsg_lin) != int(epsg_pts):
+                                        tr_center = Transformer.from_crs(int(epsg_pts), int(epsg_lin), always_xy=True)
+                                        E0_lin, N0_lin = tr_center.transform(E0, N0)
+                                except Exception as e:
+                                    st.warning(f"CRS-transform feilet (kum-senter → linjer): {e}")
+
+                            # Filtrer nær kummen i linjenes CRS
+                            if limit_by_radius and _is_valid_number(E0_lin) and _is_valid_number(N0_lin):
                                 keep = []
-                                r2 = radius_m * radius_m
+                                r2 = float(radius_m) * float(radius_m)
                                 for L in lines_list:
                                     coords_EN = L["coords"]
                                     if len(coords_EN) < 2:
                                         continue
                                     coords_test = coords_EN[::max(1, simplify_step)]
-                                    if min_dist2_to_polyline(coords_test, E0, N0) <= r2:
+                                    if min_dist2_to_polyline(coords_test, E0_lin, N0_lin) <= r2:
                                         keep.append(L)
                             else:
                                 keep = list(lines_list)
@@ -1301,7 +1319,7 @@ with tabC:
                                 coords_EN = L["coords"][::max(1, simplify_step)]
                                 if len(coords_EN) < 2:
                                     continue
-                                path_latlon = to_wgs_list_C(coords_EN, epsg_lin)
+                                path_latlon = to_wgs_list_C(coords_EN, int(epsg_lin))
                                 folium.PolyLine(
                                     locations=path_latlon,
                                     color="#5050C8",
@@ -1318,6 +1336,8 @@ with tabC:
                         lt, ln = transform_EN_to_wgs84(E1, N1, epsg_pts)
                         return lt, ln
 
+                    base_hd = man_dict.get(sel, hd if _is_valid_number(hd) else 0.0) or 0.0
+                    base_hd = float(base_hd)
                     lt1, ln1 = latlon_from_heading(E0, N0, base_hd + adj, Lm)
                     folium.PolyLine([[lat0, lon0], [lt1, ln1]],
                                     color="#c83c3c", weight=5,
@@ -1337,7 +1357,7 @@ with tabC:
 
                     out = st_folium(m, height=460, width=None, key=f"C_map_{picked_label_C}_{sel}")
 
-                    # Sett heading fra klikk eller tegnede objekter
+                    # Sett heading fra klikk/tegn
                     new_hd = None
                     if out and out.get("last_clicked") is not None:
                         latc, lonc = out["last_clicked"]["lat"], out["last_clicked"]["lng"]
@@ -1348,8 +1368,7 @@ with tabC:
                         st.info(f"Ny heading fra kart: {new_hd:.1f}°")
 
                     if out and out.get("last_active_drawing"):
-                        d = out["last_active_drawing"]
-                        typ = d.get("type")
+                        d = out["last_active_drawing"]; typ = d.get("type")
                         if typ == "polyline":
                             coords = d["geometry"]["coordinates"]
                             if len(coords) >= 2:
@@ -1516,6 +1535,7 @@ with tabC:
                 st.dataframe(pd.DataFrame(skipped))
     else:
         st.info("Last opp bilder og velg kum for manuell forhåndsvisning.")
+
 
 
 
