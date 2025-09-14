@@ -1433,19 +1433,19 @@ with tabD:
     folium.LayerControl(collapsed=False).add_to(m)
     from folium.plugins import Fullscreen
 
-# ... etter m = folium.Map(...)
-Fullscreen(
-    position="topleft",
-    title="Fullskjerm",
-    title_cancel="Avslutt fullskjerm",
-    force=True,                 # tving fullskjerm selv om containeren er liten
-    force_separate_button=True  # egen knapp
-).add_to(m)
+    # ... etter m = folium.Map(...)
+    Fullscreen(
+        position="topleft",
+        title="Fullskjerm",
+        title_cancel="Avslutt fullskjerm",
+        force=True,                 # tving fullskjerm selv om containeren er liten
+        force_separate_button=True  # egen knapp
+    ).add_to(m)
 
-# vis kartet
-st_folium(m, height=700, width=None)  # øk height for «nesten full skjerm» i Streamlit
+#     vis kartet
+    st_folium(m, height=700, width=None)  # øk height for «nesten full skjerm» i Streamlit
 
-st_folium(m, height=600, width=None)
+
 
 
 
