@@ -1057,289 +1057,87 @@ with tabC:
     corner_size_px  = st.slider("Punktstørrelse – hjørne (px)", 0.1, 12.0, 1.0, 0.1, key="C_corner_sz")
     show_center_lbl = st.checkbox("Etikett på kum-senter (base_id)", value=True,  key="C_show_center_lbl")
     show_corner_lbl = st.checkbox("Etikett på hjørner (idx)",           value=True,  key="C_show_corner_lbl")
-
-    # Velg kum
-    if centers_dict:
+if centers_dict:
         options = sorted(list(centers_dict.keys()))
         picked_label_C = st.selectbox("Velg kum/S_OBJID", options, key="C_pick_label")
     else:
-        picked_label_C = None
-        st.warning("Last opp punkter i sidepanelet.")
+        picked_label_C=None; st.warning("Last opp punkter i sidepanelet.")
 
-    # Bilder
-    files_up_C = st.file_uploader(
-        "Dra inn bilder (flere)",
-        type=["jpg", "jpeg", "png", "tif", "tiff", "heic", "heif"],
-        accept_multiple_files=True,
-        key="C_files"
-    )
-
-    if files_up_C and len(files_up_C) > 0 and picked_label_C:
-        if "MANUAL_HEADINGS" not in st.session_state:
-            st.session_state["MANUAL_HEADINGS"] = {}
+    files_up_C = st.file_uploader("Dra inn bilder (flere)", type=["jpg","jpeg","png","tif","tiff","heic","heif"], accept_multiple_files=True, key="C_files")
+    if files_up_C and len(files_up_C)>0 and picked_label_C:
+        if "MANUAL_HEADINGS" not in st.session_state: st.session_state["MANUAL_HEADINGS"]={}
         man_dict = st.session_state["MANUAL_HEADINGS"]
-
-        names = [f.name for f in files_up_C]
-        sel   = st.selectbox("Velg bilde", names, key="C_sel_name")
+        names=[f.name for f in files_up_C]
+        sel = st.selectbox("Velg bilde", names, key="C_sel_name")
         cur_idx = names.index(sel) if sel in names else 0
 
-        colL, colR = st.columns([2, 1])
-
-        # ---------- Venstre kolonne: forhåndsvisning + kart ----------
+        colL, colR = st.columns([2,1])
         with colL:
-            f = files_up_C[cur_idx]
-            payload = f.read(); f.seek(0)
-            im0 = Image.open(io.BytesIO(payload))
-            im0 = normalize_orientation(im0).convert("RGB")
-
+            f = files_up_C[cur_idx]; payload = f.read(); f.seek(0)
+            im0 = Image.open(io.BytesIO(payload)); im0 = normalize_orientation(im0).convert("RGB")
             info = centers_dict.get(picked_label_C, {})
             E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
 
-            E, N, Alt, hd, cent, line_h, dist = choose_pos_and_heading(
-                picked_label_C, E0, N0, Alt0, None, manual_override=None
-            )
+            E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label_C, E0,N0, Alt0, None, manual_override=None)
             cur_manual = man_dict.get(sel)
             show_hd = cur_manual if _is_valid_number(cur_manual) else hd
             show_hd = apply_heading_calibration(show_hd)
 
             if draw_arrow and _is_valid_number(show_hd):
-                im_prev = draw_north_arrow(
-                    im0.copy(), _wrap_deg(show_hd),
-                    size_px=arrow_size, color=arrow_col,
-                    outline=arrow_outline, n_label_size=n_label_size
-                )
+                im_prev = draw_north_arrow(im0.copy(), _wrap_deg(show_hd), size_px=arrow_size, color=arrow_col, outline=arrow_outline)
             else:
                 im_prev = im0
+            st.image(im_prev, caption=f"Forhåndsvisning – heading={show_hd if show_hd is not None else '—'}°", use_column_width=True)
 
-            st.image(
-                im_prev,
-                caption=f"Forhåndsvisning – heading={show_hd if show_hd is not None else '—'}°",
-                use_container_width=True,            # (erstatter use_column_width)
-            )
+            with st.expander("Orienter i KART (klikk for å sette nord)"):
+                if E0 is not None and N0 is not None:
+                    lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
+                    # start med gjeldende heading (kalibrering IKKE brukt for beregning, bare visning)
+                    base_hd = man_dict.get(sel, hd if _is_valid_number(hd) else 0.0) or 0.0
+                    base_hd = float(base_hd)
+                    Lm = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key="C_line_len")
+                    # gi brukeren en finjusterings-slider
+                    adj = st.slider("Finjustering (°)", -180, 180, 0, 1, key="C_line_adj")
 
-            # ---------- Kart (try/except for å vise feil) ----------
-with st.expander("Orienter i KART (klikk eller tegn/drag linje)", expanded=True):
-    import math
-    from pyproj import Transformer
-    import folium
-    from folium.plugins import Draw, Fullscreen
-    from streamlit_folium import st_folium
-    import streamlit.components.v1 as components  # korrekt fallback-import
+                    # bygg kart
+                    m = folium.Map(location=[lat0, lon0], zoom_start=19, tiles="OpenStreetMap", control_scale=True)
+                    folium.CircleMarker([lat0,lon0], radius=5, color="#0096ff", fill=True, fill_opacity=0.9).add_to(m)
 
-    # ------- hjelpefunksjoner -------
-    def is_finite_xy(x, y):
-        try:
-            return math.isfinite(float(x)) and math.isfinite(float(y))
-        except Exception:
-            return False
+                    # hvis vi har en heading, tegn rød linje
+                    def latlon_from_heading(Ec,Nc, hd_deg, length_m):
+                        rad = math.radians(hd_deg)
+                        E1 = Ec + math.sin(rad)*length_m
+                        N1 = Nc + math.cos(rad)*length_m
+                        lt, ln = transform_EN_to_wgs84(E1, N1, epsg_pts)
+                        return lt, ln
 
-    def safe_EN_to_latlon(E, N, epsg_src):
-        """Trygg transform: returner (lat, lon) eller None."""
-        try:
-            tr = Transformer.from_crs(int(epsg_src), 4326, always_xy=True)
-            lon, lat = tr.transform(float(E), float(N))
-            return (lat, lon) if is_finite_xy(lon, lat) else None
-        except Exception:
-            return None
+                    lt1, ln1 = latlon_from_heading(E0,N0, base_hd+adj, Lm)
+                    folium.PolyLine(locations=[[lat0,lon0],[lt1,ln1]], color="#c83c3c", weight=5).add_to(m)
+                    folium.Marker([lt1,ln1], draggable=False, icon=folium.Icon(color="red", icon="compass")).add_to(m)
+                    folium.LatLngPopup().add_to(m)
+                    out = st_folium(m, height=420, width=None)
 
-    # ------- guard: krever senter -------
-    if E0 is None or N0 is None:
-        st.warning("Mangler E/N for kum-senter.")
-    else:
-        # toggles for feilsøking
-        show_lines  = st.checkbox("Vis VA/EL-linjer", value=False, key=f"C_show_lines_{picked_label_C}")
-        show_points = st.checkbox("Vis hjørnepunkter", value=True,  key=f"C_show_pts_{picked_label_C}")
-        debug_info  = st.checkbox("Debug (vis EPSG, senter mm.)", value=True, key=f"C_dbg_{picked_label_C}")
+                    new_hd = None
+                    if out and out.get("last_clicked") is not None:
+                        click = out["last_clicked"]
+                        latc, lonc = click["lat"], click["lng"]
+                        # konverter klikk til E/N (samme EPSG som punktene)
+                        tr = Transformer.from_crs(4326, epsg_pts, always_xy=True)
+                        Ex, Ny = tr.transform(lonc, latc)
+                        dx = Ex - E0; dy = Ny - N0
+                        new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
+                        st.info(f"Ny heading fra kart-klikk: {new_hd:.1f}°")
 
-        # finn startpos (med fallback)
-        s = safe_EN_to_latlon(E0, N0, epsg_pts)
-        debug_msgs = []
-        if s is None:
-            debug_msgs.append(f"Kunne ikke transformere E/N ({E0}, {N0}) fra EPSG:{epsg_pts} – bruker Oslo fallback.")
-            lat0, lon0 = 59.91, 10.75
-        else:
-            lat0, lon0 = s
-
-        # ------- bygg kartet (alltid) -------
-        m = folium.Map(location=[lat0, lon0], zoom_start=19,
-                       tiles=None, control_scale=True,
-                       prefer_canvas=True, max_zoom=23)
-        folium.TileLayer(
-            tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-            attr="© OpenStreetMap contributors", name="OSM", max_zoom=19
-        ).add_to(m)
-        folium.TileLayer(
-            tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-            attr="Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
-            name="Esri imagery", max_zoom=23
-        ).add_to(m)
-        folium.LayerControl(collapsed=False).add_to(m)
-        Fullscreen(position="topleft", title="Fullskjerm", title_cancel="Avslutt",
-                   force=True, force_separate_button=True).add_to(m)
-
-        # kum-senter
-        folium.CircleMarker([lat0, lon0], radius=float(center_size_px), color="#0096ff",
-                            fill=True, fill_opacity=0.9,
-                            tooltip=picked_label_C if show_center_lbl else None).add_to(m)
-
-        # ------- linjer (valgfritt) -------
-        if show_lines:
-            lines_list = st.session_state.get("LINES_LIST") or []
-            epsg_lin   = st.session_state.get("LINES_EPSG", 25832)
-            drew_any   = False
-            try:
-                trL = (None if int(epsg_lin) == 4326
-                       else Transformer.from_crs(int(epsg_lin), 4326, always_xy=True))
-                fg_lines = folium.FeatureGroup(name="Linjer (VA/EL)").add_to(m)
-                for L in lines_list:
-                    coords = L.get("coords") or []
-                    if len(coords) < 2:
-                        continue
-                    path = []
-                    for (E, N) in coords:
-                        if trL is None:  # coords antas (lon, lat)
-                            latlon = (N, E) if is_finite_xy(E, N) else None
-                        else:
-                            try:
-                                lon, lat = trL.transform(float(E), float(N))
-                                latlon = (lat, lon) if is_finite_xy(lon, lat) else None
-                            except Exception:
-                                latlon = None
-                        if latlon:
-                            path.append(latlon)
-                    if len(path) >= 2:
-                        folium.PolyLine(path, color="#5050C8",
-                                        weight=float(line_width_px), opacity=0.9,
-                                        tooltip=L.get("objtype") or "linje").add_to(fg_lines)
-                        drew_any = True
-                if not drew_any:
-                    debug_msgs.append("Ingen linjesegmenter kunne tegnes (feil EPSG eller ugyldige koordinater?).")
-            except Exception as e:
-                debug_msgs.append(f"Linjelag feilet: {e}")
-
-        # ------- hjørnepunkter (valgfritt) -------
-        if show_points:
-            pts_df = st.session_state.get("POINTS_DF")
-            delims_val = st.session_state.get("SB_delims", "-_ ./")
-            if pts_df is not None:
-                cols = detect_columns(pts_df)
-                if cols["sobj"] and cols["east"] and cols["north"]:
-                    tmp = pts_df.copy()
-                    tmp["_base"] = tmp[cols["sobj"]].astype(str).map(lambda s: base_id(s, delims_val))
-                    grp = tmp[tmp["_base"] == base_id(picked_label_C, delims_val)].reset_index(drop=True)
-                    fg_pts = folium.FeatureGroup(name="Hjørner").add_to(m)
-                    fg_lbl = folium.FeatureGroup(name="Hjørne-etiketter").add_to(m) if show_corner_lbl else None
-                    drew_pt = False
-                    for i, r in grp.iterrows():
-                        e = parse_float_maybe_comma(r[cols["east"]])
-                        n = parse_float_maybe_comma(r[cols["north"]])
-                        p = safe_EN_to_latlon(e, n, epsg_pts) if (_is_valid_number(e) and _is_valid_number(n)) else None
-                        if not p:
-                            continue
-                        lt, ln = p
-                        folium.CircleMarker([lt, ln], radius=float(corner_size_px),
-                                            color="#00cc00", fill=True, fill_opacity=0.9,
-                                            tooltip=f"hj[{i}]").add_to(fg_pts)
-                        if fg_lbl is not None:
-                            folium.Marker(
-                                location=(lt, ln),
-                                icon=folium.DivIcon(html=f"""
-                                    <div style="font-size:12px;color:#0a0;
-                                               background:rgba(255,255,255,0.7);
-                                               padding:1px 3px;border-radius:3px;
-                                               transform: translate(6px, -6px);">
-                                        hj[{i}]
-                                    </div>""")
-                            ).add_to(fg_lbl)
-                        drew_pt = True
-                    if not drew_pt:
-                        debug_msgs.append("Fant ingen hjørnepunkter som kunne transformeres/tegnes.")
-
-        # ------- rød forhåndslinje fra heading -------
-        base_hd = float(st.session_state["MANUAL_HEADINGS"].get(sel, hd if _is_valid_number(hd) else 0.0) or 0.0)
-        Lm  = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key=f"C_line_len_{picked_label_C}")
-        adj = st.slider("Finjustering (°)",   -180, 180, 0,   1,   key=f"C_line_adj_{picked_label_C}")
-
-        def latlon_from_heading(Ec, Nc, hd_deg, length_m):
-            rad = math.radians(hd_deg)
-            E1 = Ec + math.sin(rad) * length_m
-            N1 = Nc + math.cos(rad) * length_m
-            return safe_EN_to_latlon(E1, N1, epsg_pts)
-
-        p1 = latlon_from_heading(E0, N0, (base_hd + adj) % 360.0, Lm)
-        if p1:
-            folium.PolyLine([[lat0, lon0], list(p1)], color="#c83c3c", weight=5,
-                            tooltip=f"{(base_hd+adj)%360:.1f}°").add_to(m)
-
-        # tegn/drag i kartet
-        Draw(
-            export=True, filename='heading.json', position='topleft',
-            draw_options={'polyline': True, 'polygon': False, 'rectangle': False,
-                          'circle': False, 'marker': True, 'circlemarker': False},
-            edit_options={'edit': True, 'remove': True}
-        ).add_to(m)
-        folium.LatLngPopup().add_to(m)
-
-        # ---- RENDER: unik key pr. kum + bilde + tvangs-fallback ----
-        out = None
-        try:
-            out = st_folium(m, height=520, width=None,
-                            key=f"foliumC_{picked_label_C}_{sel}")
-        except Exception as e:
-            debug_msgs.append(f"st_folium feilet: {e}")
-        if out is None:
-            # vis uansett
-            components.html(m._repr_html_(), height=520, scrolling=False)
-
-        if debug_info:
-            st.json({
-                "POINTS_EPSG": epsg_pts,
-                "LINES_EPSG": st.session_state.get("LINES_EPSG", None),
-                "start_latlon": (lat0, lon0),
-                "merknader": debug_msgs,
-            })
-
-        # --- beregn ny heading fra klikk/tegning ---
-        new_hd = None
-        if out and out.get("last_clicked") is not None:
-            latc, lonc = out["last_clicked"]["lat"], out["last_clicked"]["lng"]
-            try:
-                tr = Transformer.from_crs(4326, int(epsg_pts), always_xy=True)
-                Ex, Ny = tr.transform(lonc, latc)
-                dx = Ex - float(E0); dy = Ny - float(N0)
-                new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
-            except Exception as e:
-                st.warning(f"Kunne ikke beregne heading fra kartklikk: {e}")
-
-        if out and out.get("last_active_drawing"):
-            try:
-                d = out["last_active_drawing"]; typ = d.get("type")
-                if typ == "polyline" and len(d["geometry"]["coordinates"]) >= 2:
-                    lonc, latc = d["geometry"]["coordinates"][-1]
-                elif typ == "marker":
-                    lonc, latc = d["geometry"]["coordinates"]
+                    # lagre
+                    if st.button("Lagre heading (kart)", key="C_save_map"):
+                        final_hd = new_hd if _is_valid_number(new_hd) else (base_hd + adj)
+                        st.session_state["MANUAL_HEADINGS"][sel] = float(_wrap_deg(final_hd))
+                        st.success(f"Lagret {sel}: {_wrap_deg(final_hd):.1f}°")
                 else:
-                    lonc = latc = None
-                if lonc is not None:
-                    tr = Transformer.from_crs(4326, int(epsg_pts), always_xy=True)
-                    Ex, Ny = tr.transform(lonc, latc)
-                    dx = Ex - float(E0); dy = Ny - float(N0)
-                    new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
-            except Exception as e:
-                st.warning(f"Kunne ikke beregne heading fra tegnet geometri: {e}")
-
-        if _is_valid_number(new_hd):
-            st.info(f"Ny heading fra kart: {new_hd:.1f}°")
-        if st.button("Lagre heading (kart)", key=f"C_save_map_{picked_label_C}_{sel}"):
-            final_hd = (new_hd if _is_valid_number(new_hd) else (base_hd + adj)) % 360.0
-            st.session_state["MANUAL_HEADINGS"][sel] = float(final_hd)
-            st.success(f"Lagret {sel}: {final_hd:.1f}°")
-
-
-            # ---------- 2-klikk i bildet: beregn heading ----------
+                    st.warning("Mangler E/N for kum-senter.")
             with st.expander("Orienter med 2 hjørner (klikk i bildet)"):
                 pts_df = st.session_state.get("POINTS_DF")
-                delims_val = st.session_state.get("SB_delims", "-_ ./")
+                delims_val = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
                 base_lbl = base_id(picked_label_C, delims_val) if picked_label_C else None
                 corners_df = None
                 if pts_df is not None and base_lbl:
@@ -1349,7 +1147,7 @@ with st.expander("Orienter i KART (klikk eller tegn/drag linje)", expanded=True)
                         tmp["_base"] = tmp[cols["sobj"]].astype(str).map(lambda s: base_id(s, delims_val))
                         grp = tmp[tmp["_base"] == base_lbl]
                         if len(grp) >= 2:
-                            corners_df = grp.rename(columns={cols["east"]: "E", cols["north"]: "N"}).reset_index(drop=True)
+                            corners_df = grp.rename(columns={cols["east"]:"E", cols["north"]:"N"}).reset_index(drop=True)
 
                 if corners_df is None or len(corners_df) < 2:
                     st.info("Finner ikke minst 2 hjørner for denne kummen i opplastet punktfil.")
@@ -1357,25 +1155,24 @@ with st.expander("Orienter i KART (klikk eller tegn/drag linje)", expanded=True)
                     corners_df = corners_df.reset_index(drop=True).copy()
                     corners_df["idx"] = corners_df.index
                     show_cols = ["idx"]
-                    if "S_OBJID" in corners_df.columns:
-                        show_cols.append("S_OBJID")
-                    show_cols += [c for c in ["E", "N"] if c in corners_df.columns]
-                    st.dataframe(corners_df[show_cols].head(50), use_container_width=True)
+                    if "S_OBJID" in corners_df.columns: show_cols.append("S_OBJID")
+                    show_cols += [c for c in ["E","N"] if c in corners_df.columns]
+                    st.dataframe(corners_df[show_cols].head(30), use_container_width=True)
 
                     st.caption("Klikk først Hjørne A, deretter Hjørne B i bildet:")
                     click_key = f"C_clicks_{picked_label_C}_{sel}"
                     coords = img_coords(im0, key=click_key)
                     if coords:
                         clicks = st.session_state.get(click_key + "_list", [])
-                        if (not clicks) or (clicks and (clicks[-1] != (coords["x"], coords["y"]))):
+                        if not clicks or (clicks and (clicks[-1] != (coords['x'], coords['y']))):
                             clicks.append((coords["x"], coords["y"]))
                             clicks = clicks[-2:]
                             st.session_state[click_key + "_list"] = clicks
                     clicks = st.session_state.get(click_key + "_list", [])
                     st.write(f"Klikk: {clicks}")
 
-                    idxA = st.number_input("Indeks hjørne A (radnr 0..)", min_value=0, max_value=len(corners_df) - 1, value=0, key="C_cA_idx")
-                    idxB = st.number_input("Indeks hjørne B (radnr 0..)", min_value=0, max_value=len(corners_df) - 1, value=min(1, len(corners_df) - 1), key="C_cB_idx")
+                    idxA = st.number_input("Indeks hjørne A (radnr 0..)", min_value=0, max_value=len(corners_df)-1, value=0, key="C_cA_idx")
+                    idxB = st.number_input("Indeks hjørne B (radnr 0..)", min_value=0, max_value=len(corners_df)-1, value=min(1, len(corners_df)-1), key="C_cB_idx")
                     EA = parse_float_maybe_comma(corners_df.loc[idxA, "E"]) if 0 <= idxA < len(corners_df) else None
                     NA = parse_float_maybe_comma(corners_df.loc[idxA, "N"]) if 0 <= idxA < len(corners_df) else None
                     EB = parse_float_maybe_comma(corners_df.loc[idxB, "E"]) if 0 <= idxB < len(corners_df) else None
@@ -1383,55 +1180,39 @@ with st.expander("Orienter i KART (klikk eller tegn/drag linje)", expanded=True)
 
                     if _is_valid_number(EA) and _is_valid_number(NA) and _is_valid_number(EB) and _is_valid_number(NB):
                         if len(clicks) == 2:
-                            (xA, yA), (xB, yB) = clicks
+                            (xA,yA),(xB,yB) = clicks
                             az_real = (math.degrees(math.atan2(EB - EA, NB - NA)) + 360.0) % 360.0
                             az_img  = (math.degrees(math.atan2(xB - xA, -(yB - yA))) + 360.0) % 360.0
                             hd2 = (az_real - az_img) % 360.0
                             st.success(f"Beregnet heading = {hd2:.1f}° (lagres som manuell)")
                             st.session_state["MANUAL_HEADINGS"][sel] = float(hd2)
-                            im_prev2 = draw_north_arrow(
-                                im0.copy(), _wrap_deg(hd2),
-                                size_px=arrow_size, color=arrow_col,
-                                outline=arrow_outline, n_label_size=n_label_size
-                            )
-                            st.image(im_prev2, caption=f"Forhåndsvisning (2-klikk) = {hd2:.1f}°", use_container_width=True)
-                        if st.button("Nullstill 2-klikk", key="C_clearclicks_btn"):
+                            im_prev2 = draw_north_arrow(im0.copy(), _wrap_deg(hd2), size_px=arrow_size, color=arrow_col, outline=arrow_outline)
+                            st.image(im_prev2, caption=f"Forhåndsvisning (2‑klikk) = {hd2:.1f}°", use_column_width=True)
+                        if st.button("Nullstill 2‑klikk", key="C_clearclicks_btn"):
                             st.session_state[click_key + "_list"] = []
                     else:
                         st.warning("Ugyldige E/N for valgte hjørner.")
 
-        # ---------- Høyre kolonne: manuell heading + lagre ----------
         with colR:
             st.markdown("**Sett heading for valgt bilde**")
-            if not _is_valid_number(hd):
-                st.info("Ingen heading funnet automatisk – sett manuelt, i kart eller med 2-klikk.")
+            if not _is_valid_number(hd): st.info("Ingen heading funnet automatisk – sett manuelt, i kart eller med 2‑klikk.")
             cur_manual = st.session_state["MANUAL_HEADINGS"].get(sel)
             base_val = int(cur_manual if _is_valid_number(cur_manual) else int(hd or 0))
-            man_val  = st.slider("Manuell heading (0–359°)", 0, 359, base_val, key="C_slider")
-            c1, c2, c3 = st.columns(3)
-            if c1.button("−10°", key="C_m10"):
-                man_val = (man_val - 10) % 360; st.session_state["C_slider"] = man_val
-            if c2.button("+10°", key="C_p10"):
-                man_val = (man_val + 10) % 360; st.session_state["C_slider"] = man_val
-            if c3.button("Flip 180°", key="C_flip"):
-                man_val = (man_val + 180) % 360; st.session_state["C_slider"] = man_val
+            man_val = st.slider("Manuell heading (0–359°)", 0, 359, base_val, key="C_slider")
+            c1,c2,c3 = st.columns(3)
+            if c1.button("−10°", key="C_m10"): man_val = (man_val-10)%360; st.session_state["C_slider"]=man_val
+            if c2.button("+10°", key="C_p10"): man_val = (man_val+10)%360; st.session_state["C_slider"]=man_val
+            if c3.button("Flip 180°", key="C_flip"): man_val = (man_val+180)%360; st.session_state["C_slider"]=man_val
             if st.button("Lagre heading (manuell)", key="C_save_one"):
-                st.session_state["MANUAL_HEADINGS"][sel] = float(man_val)
-                st.success(f"Lagret {sel}: {man_val}°")
+                st.session_state["MANUAL_HEADINGS"][sel]=float(man_val); st.success(f"Lagret {sel}: {man_val}°")
 
-        # ---------- Eksport ZIP ----------
         st.markdown("---")
         if st.button("Eksporter alle som ZIP (med heading der satt)", key="C_export"):
-            processed = 0
-            skipped   = []
-            zout_mem  = io.BytesIO()
-            zout      = zipfile.ZipFile(zout_mem, "w", zipfile.ZIP_DEFLATED)
+            processed=0; skipped=[]; zout_mem=io.BytesIO(); zout=zipfile.ZipFile(zout_mem,"w",zipfile.ZIP_DEFLATED)
             for f in files_up_C:
                 try:
-                    payload = f.read(); f.seek(0)
-                    im0 = Image.open(io.BytesIO(payload))
-                    im0 = normalize_orientation(im0).convert("RGB")
-
+                    payload=f.read(); f.seek(0)
+                    im0 = Image.open(io.BytesIO(payload)); im0 = normalize_orientation(im0).convert("RGB")
                     info = centers_dict.get(picked_label_C, {})
                     E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
 
@@ -1439,35 +1220,30 @@ with st.expander("Orienter i KART (klikk eller tegn/drag linje)", expanded=True)
                     if man is None and f.name == sel:
                         man = st.session_state["MANUAL_HEADINGS"].get(sel)
 
-                    E, N, Alt, hd, cent, line_h, dist = choose_pos_and_heading(
-                        picked_label_C, E0, N0, Alt0, None, manual_override=man if man is not None else None
-                    )
-                    if E is None or N is None:
-                        skipped.append({"file": f.name, "reason": "Mangler E/N"})
-                        continue
+                    E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label_C, E0,N0, Alt0, None, manual_override=man if man is not None else None)
+                    if E is None or N is None: skipped.append({"file":f.name,"reason":"Mangler E/N"}); continue
 
                     hd = apply_heading_calibration(hd)
+
                     lat, lon = transform_EN_to_wgs84(E, N, epsg_pts)
                     if draw_arrow and _is_valid_number(hd):
-                        im0 = draw_north_arrow(im0, _wrap_deg(hd), size_px=arrow_size,
-                                               color=arrow_col, outline=arrow_outline, n_label_size=n_label_size)
-                    buf = io.BytesIO()
-                    im0.save(buf, "jpeg", quality=95); buf.seek(0)
+                        im0 = draw_north_arrow(im0, _wrap_deg(hd), size_px=arrow_size, color=arrow_col, outline=arrow_outline)
+                    buf=io.BytesIO(); im0.save(buf,"jpeg", quality=95); buf.seek(0)
                     jpeg1 = write_exif_jpeg_bytes(buf.getvalue(), lat, lon, Alt, hd)
                     newname = f"{picked_label_C}_{os.path.splitext(os.path.basename(f.name))[0]}.jpg"
-                    zout.writestr(newname, jpeg1); processed += 1
+                    zout.writestr(newname, jpeg1); processed+=1
                 except Exception as e:
                     skipped.append({"file": f.name, "reason": str(e)})
             zout.close()
-            if processed > 0:
-                st.download_button("Last ned ZIP (Tab C)", data=zout_mem.getvalue(),
-                                   file_name="geotag_manual.zip", mime="application/zip")
+            if processed>0:
+                st.download_button("Last ned ZIP (Tab C)", data=zout_mem.getvalue(), file_name="geotag_manual.zip", mime="application/zip")
                 st.success(f"Skrev {processed} bilder.")
             if skipped:
-                st.warning("Hoppet over:")
-                st.dataframe(pd.DataFrame(skipped))
-        else:
-            st.info("Last opp bilder og velg kum for manuell forhåndsvisning.")
+                st.warning("Hoppet over:"); st.dataframe(pd.DataFrame(skipped))
+    else:
+        st.info("Last opp bilder og velg kum for manuell forhåndsvisning.")
+
+ 
 
 
 # ------------------------- Tab D: Oversiktskart (Folium + etiketter) -------------------------
