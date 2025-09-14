@@ -1035,7 +1035,7 @@ with tabB:
         except Exception as e:
             st.exception(e)
 
-# ------------------------- Tab C: Manuell pr. bilde + to-klikk / kart -------------------------
+# ------------------------- Tab C: Manuell pr. bilde + to-klikk / kart (uten linjer) -------------------------
 with tabC:
     st.subheader("C) Manuell pr. bilde + to-klikk / kart")
 
@@ -1053,7 +1053,7 @@ with tabC:
     epsg_pts      = st.session_state.get("POINTS_EPSG", 25832)
     draw_arrow    = st.session_state.get("DRAW_ARROW", True)
     arrow_size    = st.session_state.get("ARROW_SIZE", 120)
-    n_label_size  = st.session_state.get("N_LABEL_SIZE", 18)  # dersom brukt av draw_north_arrow
+    n_label_size  = st.session_state.get("N_LABEL_SIZE", 18)  # brukt av draw_north_arrow hvis støttet
     arrow_col     = st.session_state.get("ARROW_COLOR", (255, 255, 255))
     arrow_outline = st.session_state.get("ARROW_OUTLINE", (0, 0, 0))
 
@@ -1122,14 +1122,13 @@ with tabC:
                 use_column_width=True,
             )
 
-            # ------------------ KART: klikk/tegn for heading + hjørner + VA/EL ------------------
+            # ------------------ KART: klikk/tegn for heading + hjørner ------------------
             with st.expander("Orienter i KART (klikk eller tegn/drag linje)", expanded=True):
                 if E0 is not None and N0 is not None:
                     # Kart-kontroller
-                    show_lines     = st.checkbox("Vis VA/EL-linjer", value=True, key="C_show_lines")
-                    line_width_px  = st.slider("Linjebredde (px)", 0.5, 6.0, 2.0, 0.5, key="C_line_w")
-                    Lm             = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key="C_line_len")
-                    adj            = st.slider("Finjustering (°)", -180, 180, 0, 1, key="C_line_adj")
+                    line_width_px  = st.slider("Bredde på rød forhåndslinje (px)", 0.1, 6.0, 2.0, 0.1, key="C_line_w")
+                    Lm             = st.slider("Lengde på rød forhåndslinje (meter)", 1.0, 40.0, 12.0, 0.5, key="C_line_len")
+                    adj            = st.slider("Finjustering (°) – legges til beregnet heading", -180, 180, 0, 1, key="C_line_adj")
 
                     # Transform senter til WGS84 for kart
                     lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
@@ -1161,11 +1160,11 @@ with tabC:
                     # ---- HJØRNEPUNKTER (justerbare etiketter) ----
                     show_corners   = st.checkbox("Vis hjørnepunkter", value=True,
                                                  key=f"C_show_corners_{picked_label_C}")
-                    corner_size    = st.slider("Hjørne-størrelse (px)", 0.5, 12.0, 3.0, 0.5,
+                    corner_size    = st.slider("Hjørne-størrelse (px)", 0.1, 12.0, 3.0, 0.1,
                                                key=f"C_corner_size_{picked_label_C}")
                     label_on       = st.checkbox("Vis etiketter", value=True,
                                                  key=f"C_label_on_{picked_label_C}")
-                    label_font_px  = st.slider("Etikett skriftstørrelse (px)", 8, 28, 12,
+                    label_font_px  = st.slider("Etikett skriftstørrelse (px)", 6, 28, 12,
                                                key=f"C_label_font_{picked_label_C}")
                     label_dx       = st.slider("Etikett offset X (px)", -40, 40, 8,
                                                key=f"C_label_dx_{picked_label_C}")
@@ -1241,141 +1240,6 @@ with tabC:
                         else:
                             st.info("Ingen punktfil lastet i sidepanelet.")
 
-                    # ---- VA/EL-LINJER (robust WGS84-basert nærhetsfiltrering) ----
-                    if show_lines:
-                        lines_list       = st.session_state.get("LINES_LIST") or []
-                        epsg_lin_session = int(st.session_state.get("LINES_EPSG", 25832))
-
-                        epsg_lin = st.number_input(
-                            "EPSG for linjer (override ved behov)",
-                            min_value=2000, max_value=9000, value=epsg_lin_session,
-                            help="Sett 5110 for NTM10, 4326 for WGS84 osv.",
-                            key="C_epsg_lin_override",
-                        )
-
-                        limit_by_radius = st.checkbox("Begrens linjer til radius rundt kum", value=True, key="C_limit_lines")
-                        radius_m        = st.slider("Radius (m) for linjer (WGS84-haversine)", 1, 500, 60, key="C_radius_lines")
-                        max_lines_keep  = st.slider("Maks antall linjer å tegne", 10, 2000, 300, step=10, key="C_max_lines")
-                        simplify_step   = st.slider("Tynn ut vertex (hvert N-te punkt)", 1, 20, 3, key="C_simplify_lines")
-
-                        st.caption(f"CRS debug: punkter EPSG={epsg_pts}, linjer EPSG(session)={epsg_lin_session} (override:{epsg_lin})")
-
-                        # ---- helpers ----
-                        def _to_float(v):
-                            if isinstance(v, (int, float)): return float(v)
-                            if isinstance(v, str):
-                                v = v.strip().replace(" ", "").replace("\u00A0","")
-                                v = v.replace(",", ".")
-                                try: return float(v)
-                                except: return None
-                            return None
-
-                        def _strip_xy(coord):
-                            """Tar (x,y) eller (x,y,z) eller [x,y] → (x,y) som float."""
-                            if coord is None: return None
-                            try:
-                                if len(coord) >= 2:
-                                    x = _to_float(coord[0]); y = _to_float(coord[1])
-                                    return (x, y) if x is not None and y is not None else None
-                            except Exception:
-                                pass
-                            return None
-
-                        def _transform_points(coords_xy, src_epsg, swap_xy=False):
-                            """Transformer liste av (x,y) til WGS84 (lat,lon). swap_xy bytter x/y før transform."""
-                            tr = Transformer.from_crs(int(src_epsg), 4326, always_xy=True)
-                            out = []
-                            for (x, y) in coords_xy:
-                                if swap_xy:
-                                    x, y = y, x
-                                lon, lat = tr.transform(x, y)
-                                out.append((lat, lon))
-                            return out
-
-                        def _haversine_m(lat1, lon1, lat2, lon2):
-                            R = 6371000.0
-                            dlat = math.radians(lat2-lat1)
-                            dlon = math.radians(lon2-lon1)
-                            a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1))*math.cos(math.radians(lat2))*math.sin(dlon/2)**2
-                            return 2*R*math.asin(math.sqrt(a))
-
-                        # Kum i WGS84
-                        lat_kum, lon_kum = transform_EN_to_wgs84(E0, N0, epsg_pts)
-
-                        # Gjett akse-rekkefølge (x/y vs y/x) ut fra første vertex
-                        swap_axes_guess = False
-                        try:
-                            for L in lines_list:
-                                if L.get("coords"):
-                                    c0 = _strip_xy(L["coords"][0])
-                                    if c0:
-                                        (x, y) = c0
-                                        cand1 = _transform_points([c0], epsg_lin, swap_xy=False)[0]
-                                        cand2 = _transform_points([c0], epsg_lin, swap_xy=True)[0]
-                                        d1 = _haversine_m(lat_kum, lon_kum, cand1[0], cand1[1])
-                                        d2 = _haversine_m(lat_kum, lon_kum, cand2[0], cand2[1])
-                                        def in_no(lat, lon): return 57.0 <= lat <= 72.0 and 4.0 <= lon <= 32.0
-                                        if in_no(*cand1) and not in_no(*cand2):
-                                            swap_axes_guess = False
-                                        elif in_no(*cand2) and not in_no(*cand1):
-                                            swap_axes_guess = True
-                                        else:
-                                            swap_axes_guess = (d2 < d1)
-                                        break
-                        except Exception:
-                            pass
-
-                        # Filtrer, tynn og tegn
-                        fg_lines = folium.FeatureGroup(name="Linjer (VA/EL)").add_to(m)
-                        kept = 0
-                        for L in lines_list:
-                            coords_raw = L.get("coords") or []
-                            if len(coords_raw) < 2:
-                                continue
-                            # rens + tynn
-                            cleaned = []
-                            for idx, c in enumerate(coords_raw):
-                                if idx % max(1, simplify_step) != 0:
-                                    continue
-                                xy = _strip_xy(c)
-                                if xy: cleaned.append(xy)
-                            if len(cleaned) < 2:
-                                continue
-
-                            # til WGS84
-                            try:
-                                path_ll = _transform_points(cleaned, epsg_lin, swap_xy=swap_axes_guess)
-                            except Exception:
-                                try:
-                                    path_ll = _transform_points(cleaned, epsg_lin, swap_xy=False)
-                                except:
-                                    continue
-
-                            # radiusfilter (haversine)
-                            if limit_by_radius:
-                                near_ok = False
-                                for (latp, lonp) in path_ll:
-                                    if _haversine_m(lat_kum, lon_kum, latp, lonp) <= float(radius_m):
-                                        near_ok = True
-                                        break
-                                if not near_ok:
-                                    continue
-
-                            # tegn
-                            folium.PolyLine(
-                                locations=path_ll,
-                                color="#5050C8",
-                                weight=float(line_width_px),
-                                opacity=0.9,
-                                tooltip=L.get("objtype") or "linje",
-                            ).add_to(fg_lines)
-
-                            kept += 1
-                            if kept >= int(max_lines_keep):
-                                break
-
-                        st.caption(f"Tegnet {kept} linjer (akse-bytte={'ON' if swap_axes_guess else 'OFF'})")
-
                     # Rød forhåndslinje (heading-preview)
                     def latlon_from_heading(Ec, Nc, hd_deg, length_m):
                         rad = math.radians(hd_deg)
@@ -1388,12 +1252,12 @@ with tabC:
                     base_hd = float(base_hd)
                     lt1, ln1 = latlon_from_heading(E0, N0, base_hd + adj, Lm)
                     folium.PolyLine([[lat0, lon0], [lt1, ln1]],
-                                    color="#c83c3c", weight=5,
+                                    color="#c83c3c", weight=float(line_width_px),
                                     tooltip=f"{base_hd+adj:.1f}°").add_to(m)
                     folium.Marker([lt1, ln1], draggable=False,
                                   icon=folium.Icon(color="red", icon="compass")).add_to(m)
 
-                    # Tegn/drag i kart
+                    # Tegn/drag i kart for å sette heading
                     draw = Draw(
                         export=False, position='topleft',
                         draw_options={'polyline': True, 'polygon': False, 'rectangle': False,
@@ -1413,7 +1277,7 @@ with tabC:
                         Ex, Ny = tr.transform(lonc, latc)
                         dx = Ex - E0; dy = Ny - N0
                         new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
-                        st.info(f"Ny heading fra kart: {new_hd:.1f}°")
+                        st.info(f"Ny heading fra kart: {new_hd:.1f}° (før finjustering)")
 
                     if out and out.get("last_active_drawing"):
                         d = out["last_active_drawing"]; typ = d.get("type")
@@ -1425,17 +1289,20 @@ with tabC:
                                 Ex, Ny = tr.transform(lonc, latc)
                                 dx = Ex - E0; dy = Ny - N0
                                 new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
+                                st.info(f"Ny heading (polyline): {new_hd:.1f}° (før finjustering)")
                         elif typ == "marker":
                             lonc, latc = d["geometry"]["coordinates"]
                             tr = Transformer.from_crs(4326, epsg_pts, always_xy=True)
                             Ex, Ny = tr.transform(lonc, latc)
                             dx = Ex - E0; dy = Ny - N0
                             new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
+                            st.info(f"Ny heading (marker): {new_hd:.1f}° (før finjustering)")
 
                     if st.button("Lagre heading (kart)", key="C_save_map"):
-                        final_hd = new_hd if _is_valid_number(new_hd) else (base_hd + adj)
+                        base = new_hd if _is_valid_number(new_hd) else base_hd
+                        final_hd = (base + (adj or 0)) % 360.0
                         st.session_state["MANUAL_HEADINGS"][sel] = float(_wrap_deg(final_hd))
-                        st.success(f"Lagret {sel}: {_wrap_deg(final_hd):.1f}°")
+                        st.success(f"Lagret {sel}: {_wrap_deg(final_hd):.1f}° (inkl. finjustering)")
                 else:
                     st.warning("Mangler E/N for kum-senter.")
 
@@ -1508,7 +1375,7 @@ with tabC:
                     else:
                         st.warning("Ugyldige E/N for valgte hjørner.")
 
-        # ------------------ HØYRE: manuell heading ------------------
+        # ------------------ HØYRE: manuell heading + nudge ------------------
         with colR:
             st.markdown("**Sett heading for valgt bilde**")
             if not _is_valid_number(hd):
@@ -1516,13 +1383,14 @@ with tabC:
             cur_manual = st.session_state["MANUAL_HEADINGS"].get(sel)
             base_val = int(cur_manual if _is_valid_number(cur_manual) else int(hd or 0))
             man_val = st.slider("Manuell heading (0–359°)", 0, 359, base_val, key="C_slider")
-            c1, c2, c3 = st.columns(3)
-            if c1.button("−10°", key="C_m10"):
-                man_val = (man_val - 10) % 360; st.session_state["C_slider"] = man_val
-            if c2.button("+10°", key="C_p10"):
-                man_val = (man_val + 10) % 360; st.session_state["C_slider"] = man_val
-            if c3.button("Flip 180°", key="C_flip"):
-                man_val = (man_val + 180) % 360; st.session_state["C_slider"] = man_val
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+            if c1.button("−10°", key="C_m10"): man_val = (man_val - 10) % 360; st.session_state["C_slider"] = man_val
+            if c2.button("−1°",  key="C_m1"):  man_val = (man_val - 1)  % 360; st.session_state["C_slider"] = man_val
+            if c3.button("+1°",  key="C_p1"):  man_val = (man_val + 1)  % 360; st.session_state["C_slider"] = man_val
+            if c4.button("+10°", key="C_p10"): man_val = (man_val + 10) % 360; st.session_state["C_slider"] = man_val
+            if c5.button("Flip 180°", key="C_flip"): man_val = (man_val + 180) % 360; st.session_state["C_slider"] = man_val
+
             if st.button("Lagre heading (manuell)", key="C_save_one"):
                 st.session_state["MANUAL_HEADINGS"][sel] = float(man_val)
                 st.success(f"Lagret {sel}: {man_val}°")
