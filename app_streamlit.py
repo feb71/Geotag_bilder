@@ -1060,7 +1060,7 @@ with tabC:
 if centers_dict:
         options = sorted(list(centers_dict.keys()))
         picked_label_C = st.selectbox("Velg kum/S_OBJID", options, key="C_pick_label")
-        else:
+else:
         picked_label_C=None; st.warning("Last opp punkter i sidepanelet.")
 
     files_up_C = st.file_uploader("Dra inn bilder (flere)", type=["jpg","jpeg","png","tif","tiff","heic","heif"], accept_multiple_files=True, key="C_files")
