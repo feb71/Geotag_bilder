@@ -1410,8 +1410,8 @@ with st.expander("Orienter i KART (klikk eller tegn/drag linje)", expanded=True)
             if skipped:
                 st.warning("Hoppet over:")
                 st.dataframe(pd.DataFrame(skipped))
-    else:
-        st.info("Last opp bilder og velg kum for manuell forhåndsvisning.")
+        else:
+            st.info("Last opp bilder og velg kum for manuell forhåndsvisning.")
 
 
 # ------------------------- Tab D: Oversiktskart (Folium + etiketter) -------------------------
