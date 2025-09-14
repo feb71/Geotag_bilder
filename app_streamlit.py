@@ -1263,152 +1263,175 @@ with tabC:
             # (2-klikk-biten din fortsetter uendret herfra…)
 
 
-# ------------------------- Tab D: Oversiktskart -------------------------
+# ------------------------- Tab D: Oversiktskart (Folium + etiketter) -------------------------
 with tabD:
-    st.subheader("D) Kart – oversikt")
+    st.subheader("D) Kart – oversikt (Folium)")
 
-    line_width_D  = st.slider("Linjebredde (oversiktskart, px)", 0.1, 8.0, 0.8, 0.1, key="D_line_width")
-    center_size_D = st.slider("Senterpunkt-størrelse (px)",       0.1, 30.0, 6.0, 0.1, key="D_center_size")
-
-    show_centers = st.checkbox("Vis kummer", True, key="D_show_centers")
-    show_lines   = st.checkbox("Vis linjer",  True, key="D_show_lines")
-    label_centers = st.checkbox("Etikett på kummer (base_id)", True, key="D_label_centers")
-    label_lines   = st.checkbox("Etikett på linjer (objtype/navn)", True, key="D_label_lines")
-
+    lines      = st.session_state.get("LINES_LIST") or []
     centers_df = st.session_state.get("CENTERS_DF")
-    lines      = st.session_state.get("LINES_LIST")
+    pts_df     = st.session_state.get("POINTS_DF")
+    epsg_pts   = st.session_state.get("POINTS_EPSG", 25832)
+    epsg_lin   = st.session_state.get("LINES_EPSG", 25832)
 
+    # Visnings-kontroller (tillater < 1 px)
+    show_lines      = st.checkbox("Vis linjer", True, key="D_show_lines")
+    show_centers    = st.checkbox("Vis kummer", True, key="D_show_centers")
+    show_line_lbl   = st.checkbox("Etikett på linjer (objtype/navn)", True, key="D_show_line_lbl")
+    show_center_lbl = st.checkbox("Etikett på kummer (base_id)", True, key="D_show_center_lbl")
+
+    line_width_px   = st.slider("Linjebredde (px)", 0.1, 12.0, 0.8, 0.1, key="D_line_w")
+    center_size_px  = st.slider("Punktstørrelse – kum-senter (px)", 0.1, 30.0, 3.0, 0.1, key="D_center_sz")
+    corner_size_px  = st.slider("Punktstørrelse – hjørner (px)", 0.1, 12.0, 1.0, 0.1, key="D_corner_sz")
+    label_px        = st.slider("Tekststørrelse etiketter (px)", 8, 28, 12, 1, key="D_label_px")
+
+    # Velg kartets sentrum
+    lat0, lon0 = 59.91, 10.75
     try:
-        import pydeck as pdk
-        epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
-        epsg_lin = st.session_state.get("LINES_EPSG", 25832)
-
-        layers = []
-        view_state = pdk.ViewState(latitude=59.91, longitude=10.75, zoom=10)
-
-        # --- KUMMER ---
-        if show_centers and (centers_df is not None) and (not centers_df.empty):
-            tr_pts = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
-            tmp = centers_df.copy()
-            tmp["lon"], tmp["lat"] = zip(*[tr_pts.transform(e, n) for e, n in zip(tmp["center_E"], tmp["center_N"])])
-            tmp["color"] = [[0, 150, 255]] * len(tmp)
-
-            layers.append(
-                pdk.Layer(
-                    "ScatterplotLayer",
-                    tmp,
-                    get_position='[lon, lat]',
-                    get_radius=center_size_D,
-                    radius_units="pixels",
-                    radius_min_pixels=0,
-                    get_fill_color='color',
-                    pickable=True,
-                )
-            )
-
-            if label_centers:
-                try:
-                    layers.append(
-                        pdk.Layer(
-                            "TextLayer",
-                            tmp,
-                            get_position='[lon, lat]',
-                            get_text="base_id",
-                            get_size=12,
-                            get_color=[0, 0, 0],
-                            get_angle=0,
-                            get_alignment_baseline="bottom",
-                        )
-                    )
-                except Exception:
-                    pass
-
-            view_state = pdk.ViewState(
-                latitude=float(tmp["lat"].mean()),
-                longitude=float(tmp["lon"].mean()),
-                zoom=16,
-            )
-
-        # --- LINJER ---
-        if show_lines and lines:
+        if centers_df is not None and not centers_df.empty:
+            trc = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
+            lons, lats = zip(*[trc.transform(float(e), float(n))
+                               for e, n in zip(centers_df["center_E"], centers_df["center_N"])])
+            lat0, lon0 = float(pd.Series(lats).mean()), float(pd.Series(lons).mean())
+        elif lines:
             if epsg_lin != 4326:
-                tr_lin = Transformer.from_crs(epsg_lin, 4326, always_xy=True)
-                def to_wgs_path(coords): return [[*tr_lin.transform(x, y)] for (x, y) in coords]
-                def to_wgs_point(x, y):   return tr_lin.transform(x, y)
+                trl = Transformer.from_crs(epsg_lin, 4326, always_xy=True)
+                x, y = trl.transform(lines[0]["coords"][0][0], lines[0]["coords"][0][1])
             else:
-                def to_wgs_path(coords): return [[x, y] for (x, y) in coords]
-                def to_wgs_point(x, y):   return (x, y)
-
-            paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
-            layers.append(
-                pdk.Layer(
-                    "PathLayer",
-                    paths,
-                    get_path="path",
-                    get_width=line_width_D,
-                    width_units="pixels",
-                    width_min_pixels=0,
-                    get_color=[80, 80, 200],
-                )
-            )
-
-            # Etiketter for linjer (midtpunkt på hver linje)
-            if label_lines:
-                import pandas as pd
-                lbl_rows = []
-                for L in lines:
-                    coords = L.get("coords") or []
-                    if len(coords) < 2:
-                        continue
-                    mid_i = len(coords) // 2
-                    mx, my = coords[mid_i]
-                    lon, lat = to_wgs_point(mx, my)
-                    text = str(L.get("objtype") or L.get("name") or "linje")
-                    lbl_rows.append({"lon": lon, "lat": lat, "label": text})
-
-                if lbl_rows:
-                    df_lbl = pd.DataFrame(lbl_rows)
-                    layers.append(
-                        pdk.Layer(
-                            "TextLayer",
-                            df_lbl,
-                            get_position='[lon, lat]',
-                            get_text="label",
-                            get_size=12,
-                            get_color=[80, 80, 200],
-                            get_angle=0,
-                            get_alignment_baseline="bottom",
-                        )
-                    )
-        else:
-            if not show_lines:
-                pass
-            else:
-                st.info("Ingen linjer lastet eller tolket fra filen.")
-
-        # Tegn
-        st.pydeck_chart(pdk.Deck(map_style=None, layers=layers, initial_view_state=view_state), use_container_width=True)
-
-        # Enkel “legend” / påskrift av lag
-        st.markdown(
-            """
-            <div style="position:relative;margin-top:-40px;">
-              <div style="position:absolute;left:8px;top:8px;
-                          background:rgba(255,255,255,0.85);
-                          padding:6px 10px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
-                <b>Lag</b><br/>
-                <span style="color:#0096ff;">●</span> Kummer<br/>
-                <span style="color:#5050C8;">▬</span> Linjer
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
+                x, y = lines[0]["coords"][0]
+            lat0, lon0 = y, x
     except Exception:
-        st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
+        pass
 
-st.markdown("---")
-st.caption("v11.7 • Kart-rotasjon (klikk for heading) • Speil/offset-kalibrering • EXIF WGS84, LandXML/GeoJSON, 2-klikk, CRS-verktøy")
+    # Kart
+    m = folium.Map(location=[lat0, lon0], zoom_start=19,
+                   tiles=None, control_scale=True,
+                   prefer_canvas=True, max_zoom=23)
+
+    # Bakgrunnslag (OSM + Esri med høy max_zoom)
+    folium.TileLayer(
+        tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attr="© OpenStreetMap contributors", name="OSM", max_zoom=19
+    ).add_to(m)
+    folium.TileLayer(
+        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+        name="Esri imagery", max_zoom=23
+    ).add_to(m)
+
+    # --- hjelpere ---
+    def to_wgs_list(coords, src_epsg):
+        if src_epsg == 4326:
+            # coords er [(lon,lat)] -> Leaflet vil ha (lat,lon)
+            return [(c[1], c[0]) for c in coords]
+        tr = Transformer.from_crs(src_epsg, 4326, always_xy=True)
+        out = []
+        for (x, y) in coords:
+            lon, lat = tr.transform(x, y)
+            out.append((lat, lon))
+        return out
+
+    def midpoint_EN(coords):
+        """mid-punkt langs polyline i E/N (meter). Enkel cumulativ lengde."""
+        if len(coords) < 2:
+            return coords[0] if coords else None
+        import math
+        seglen = []
+        tot = 0.0
+        for i in range(len(coords)-1):
+            x1,y1 = coords[i]; x2,y2 = coords[i+1]
+            d = math.hypot(x2-x1, y2-y1)
+            seglen.append(d); tot += d
+        half = tot/2.0; acc = 0.0
+        for i,d in enumerate(seglen):
+            if acc + d >= half:
+                t = (half - acc)/d if d>0 else 0.0
+                x1,y1 = coords[i]; x2,y2 = coords[i+1]
+                return (x1 + t*(x2-x1), y1 + t*(y2-y1))
+            acc += d
+        return coords[len(coords)//2]
+
+    # --- linjer + linje-etiketter ---
+    if show_lines and lines:
+        fg_lines = folium.FeatureGroup(name="Linjer").add_to(m)
+        fg_line_lbl = folium.FeatureGroup(name="Linje-etiketter").add_to(m) if show_line_lbl else None
+
+        # transformer for label-punkt
+        tr_lbl = Transformer.from_crs(epsg_lin, 4326, always_xy=True) if epsg_lin != 4326 else None
+
+        for L in lines:
+            coords = L.get("coords") or []
+            if len(coords) < 2:
+                continue
+            # Polyline
+            path_latlon = to_wgs_list(coords, epsg_lin)
+            folium.PolyLine(path_latlon, color="#5050C8",
+                            weight=float(line_width_px), opacity=0.9,
+                            tooltip=(L.get("objtype") or "linje")).add_to(fg_lines)
+            # Etikett ved midtpunkt
+            if fg_line_lbl is not None:
+                midEN = midpoint_EN(coords)
+                if midEN:
+                    mx,my = midEN
+                    if tr_lbl:
+                        mlon, mlat = tr_lbl.transform(mx, my)
+                    else:
+                        mlon, mlat = mx, my
+                    folium.Marker(
+                        location=(mlat, mlon),
+                        icon=folium.DivIcon(html=f"""
+                            <div style="font-size:{int(label_px)}px;color:#5050C8;
+                                       white-space:nowrap; background:rgba(255,255,255,0.6);
+                                       padding:1px 3px;border-radius:3px;">
+                                {str(L.get("objtype") or L.get("name") or "linje")}
+                            </div>""")
+                    ).add_to(fg_line_lbl)
+    elif show_lines and not lines:
+        st.info("Ingen linjer lastet eller tolket fra filen.")
+
+    # --- kum-sentre + etiketter ---
+    if show_centers and centers_df is not None and not centers_df.empty:
+        fg_centers = folium.FeatureGroup(name="Kummer").add_to(m)
+        fg_center_lbl = folium.FeatureGroup(name="Kum-etiketter").add_to(m) if show_center_lbl else None
+        trc = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
+        for _, r in centers_df.iterrows():
+            lon, lat = trc.transform(float(r["center_E"]), float(r["center_N"]))
+            folium.CircleMarker(
+                location=(lat, lon),
+                radius=float(center_size_px),
+                color="#0096ff", fill=True, fill_opacity=0.9,
+                tooltip=str(r.get("base_id"))
+            ).add_to(fg_centers)
+            if fg_center_lbl is not None:
+                folium.Marker(
+                    location=(lat, lon),
+                    icon=folium.DivIcon(html=f"""
+                        <div style="font-size:{int(label_px)}px;color:#000000;
+                                   white-space:nowrap; background:rgba(255,255,255,0.7);
+                                   padding:1px 3px;border-radius:3px;">
+                            {str(r.get("base_id"))}
+                        </div>""")
+                ).add_to(fg_center_lbl)
+
+    # (valgfritt) hjørnepunkter
+    if pts_df is not None:
+        cols = detect_columns(pts_df)
+        if cols["east"] and cols["north"]:
+            trp = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
+            fg_corners = folium.FeatureGroup(name="Hjørnepunkter").add_to(m)
+            for _, rr in pts_df.iterrows():
+                e = parse_float_maybe_comma(rr[cols["east"]])
+                n = parse_float_maybe_comma(rr[cols["north"]])
+                if not _is_valid_number(e) or not _is_valid_number(n):
+                    continue
+                lon, lat = trp.transform(float(e), float(n))
+                folium.CircleMarker(
+                    location=(lat, lon),
+                    radius=float(corner_size_px),
+                    color="#00cc00", fill=True, fill_opacity=0.9
+                ).add_to(fg_corners)
+
+    folium.LayerControl(collapsed=False).add_to(m)
+    st_folium(m, height=600, width=None)
+
 
 
