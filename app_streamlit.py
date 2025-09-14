@@ -1053,10 +1053,11 @@ with tabC:
     epsg_pts      = st.session_state.get("POINTS_EPSG", 25832)
     draw_arrow    = st.session_state.get("DRAW_ARROW", True)
     arrow_size    = st.session_state.get("ARROW_SIZE", 120)
+    n_label_size  = st.session_state.get("N_LABEL_SIZE", 18)  # dersom brukt av draw_north_arrow
     arrow_col     = st.session_state.get("ARROW_COLOR", (255, 255, 255))
     arrow_outline = st.session_state.get("ARROW_OUTLINE", (0, 0, 0))
 
-    # Velg kum
+    # Velg kum/S_OBJID
     if centers_dict:
         options = sorted(list(centers_dict.keys()))
         picked_label_C = st.selectbox("Velg kum/S_OBJID", options, key="C_pick_label")
@@ -1095,7 +1096,7 @@ with tabC:
             info = centers_dict.get(picked_label_C, {})
             E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
 
-            # Default heading fra logikken
+            # Default heading fra logikk
             E, N, Alt, hd, cent, line_h, dist = choose_pos_and_heading(
                 picked_label_C, E0, N0, Alt0, None, manual_override=None
             )
@@ -1109,7 +1110,8 @@ with tabC:
             if draw_arrow and _is_valid_number(show_hd):
                 im_prev = draw_north_arrow(
                     im0.copy(), _wrap_deg(show_hd),
-                    size_px=arrow_size, color=arrow_col, outline=arrow_outline
+                    size_px=arrow_size, color=arrow_col, outline=arrow_outline,
+                    n_label_size=n_label_size
                 )
             else:
                 im_prev = im0
@@ -1239,94 +1241,140 @@ with tabC:
                         else:
                             st.info("Ingen punktfil lastet i sidepanelet.")
 
-                    # ---- VA/EL-LINJER (ytelsesvennlig + korrekt CRS) ----
+                    # ---- VA/EL-LINJER (robust WGS84-basert nærhetsfiltrering) ----
                     if show_lines:
-                        lines_list = st.session_state.get("LINES_LIST") or []
-                        epsg_lin_session = st.session_state.get("LINES_EPSG", 25832)
+                        lines_list       = st.session_state.get("LINES_LIST") or []
+                        epsg_lin_session = int(st.session_state.get("LINES_EPSG", 25832))
 
-                        # EPSG-override i UI (eks: 5110 for NTM10)
                         epsg_lin = st.number_input(
                             "EPSG for linjer (override ved behov)",
-                            min_value=2000, max_value=9000, value=int(epsg_lin_session),
+                            min_value=2000, max_value=9000, value=epsg_lin_session,
                             help="Sett 5110 for NTM10, 4326 for WGS84 osv.",
                             key="C_epsg_lin_override",
                         )
 
-                        # Ytelse
                         limit_by_radius = st.checkbox("Begrens linjer til radius rundt kum", value=True, key="C_limit_lines")
-                        radius_m        = st.slider("Radius (m) for linjer", 1, 200, 60, key="C_radius_lines")
+                        radius_m        = st.slider("Radius (m) for linjer (WGS84-haversine)", 1, 500, 60, key="C_radius_lines")
                         max_lines_keep  = st.slider("Maks antall linjer å tegne", 10, 2000, 300, step=10, key="C_max_lines")
                         simplify_step   = st.slider("Tynn ut vertex (hvert N-te punkt)", 1, 20, 3, key="C_simplify_lines")
 
-                        def to_wgs_list_C(coords, src_epsg):
-                            if src_epsg == 4326:
-                                return [(y, x) for (x, y) in [(c[0], c[1]) for c in coords]]
-                            trL = Transformer.from_crs(int(src_epsg), 4326, always_xy=True)
+                        st.caption(f"CRS debug: punkter EPSG={epsg_pts}, linjer EPSG(session)={epsg_lin_session} (override:{epsg_lin})")
+
+                        # ---- helpers ----
+                        def _to_float(v):
+                            if isinstance(v, (int, float)): return float(v)
+                            if isinstance(v, str):
+                                v = v.strip().replace(" ", "").replace("\u00A0","")
+                                v = v.replace(",", ".")
+                                try: return float(v)
+                                except: return None
+                            return None
+
+                        def _strip_xy(coord):
+                            """Tar (x,y) eller (x,y,z) eller [x,y] → (x,y) som float."""
+                            if coord is None: return None
+                            try:
+                                if len(coord) >= 2:
+                                    x = _to_float(coord[0]); y = _to_float(coord[1])
+                                    return (x, y) if x is not None and y is not None else None
+                            except Exception:
+                                pass
+                            return None
+
+                        def _transform_points(coords_xy, src_epsg, swap_xy=False):
+                            """Transformer liste av (x,y) til WGS84 (lat,lon). swap_xy bytter x/y før transform."""
+                            tr = Transformer.from_crs(int(src_epsg), 4326, always_xy=True)
                             out = []
-                            for (x, y) in coords:
-                                lon, lat = trL.transform(x, y)
+                            for (x, y) in coords_xy:
+                                if swap_xy:
+                                    x, y = y, x
+                                lon, lat = tr.transform(x, y)
                                 out.append((lat, lon))
                             return out
 
-                        def min_dist2_to_polyline(coords_EN, e0, n0):
-                            """Min kvadratisk avstand fra (e0,n0) til polyline (i samme CRS)."""
-                            best = float("inf")
-                            for i in range(len(coords_EN) - 1):
-                                x1, y1 = coords_EN[i]
-                                x2, y2 = coords_EN[i+1]
-                                vx, vy = (x2 - x1), (y2 - y1)
-                                wx, wy = (e0 - x1), (n0 - y1)
-                                L2 = vx*vx + vy*vy
-                                t  = 0.0 if L2 == 0 else max(0.0, min(1.0, (wx*vx + wy*vy)/L2))
-                                px = x1 + t*vx; py = y1 + t*vy
-                                d2 = (px - e0)**2 + (py - n0)**2
-                                if d2 < best: best = d2
-                            return best
+                        def _haversine_m(lat1, lon1, lat2, lon2):
+                            R = 6371000.0
+                            dlat = math.radians(lat2-lat1)
+                            dlon = math.radians(lon2-lon1)
+                            a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1))*math.cos(math.radians(lat2))*math.sin(dlon/2)**2
+                            return 2*R*math.asin(math.sqrt(a))
 
-                        # CRS-debug
-                        st.caption(f"CRS debug: punkter EPSG={epsg_pts}, linjer EPSG(session)={int(epsg_lin_session)} (override nå: {int(epsg_lin)})")
+                        # Kum i WGS84
+                        lat_kum, lon_kum = transform_EN_to_wgs84(E0, N0, epsg_pts)
 
-                        if lines_list:
-                            # Transformér kum-senter til linjenes CRS før radius-sjekk
-                            E0_lin, N0_lin = E0, N0
-                            if _is_valid_number(E0) and _is_valid_number(N0):
-                                try:
-                                    if int(epsg_lin) != int(epsg_pts):
-                                        tr_center = Transformer.from_crs(int(epsg_pts), int(epsg_lin), always_xy=True)
-                                        E0_lin, N0_lin = tr_center.transform(E0, N0)
-                                except Exception as e:
-                                    st.warning(f"CRS-transform feilet (kum-senter → linjer): {e}")
+                        # Gjett akse-rekkefølge (x/y vs y/x) ut fra første vertex
+                        swap_axes_guess = False
+                        try:
+                            for L in lines_list:
+                                if L.get("coords"):
+                                    c0 = _strip_xy(L["coords"][0])
+                                    if c0:
+                                        (x, y) = c0
+                                        cand1 = _transform_points([c0], epsg_lin, swap_xy=False)[0]
+                                        cand2 = _transform_points([c0], epsg_lin, swap_xy=True)[0]
+                                        d1 = _haversine_m(lat_kum, lon_kum, cand1[0], cand1[1])
+                                        d2 = _haversine_m(lat_kum, lon_kum, cand2[0], cand2[1])
+                                        def in_no(lat, lon): return 57.0 <= lat <= 72.0 and 4.0 <= lon <= 32.0
+                                        if in_no(*cand1) and not in_no(*cand2):
+                                            swap_axes_guess = False
+                                        elif in_no(*cand2) and not in_no(*cand1):
+                                            swap_axes_guess = True
+                                        else:
+                                            swap_axes_guess = (d2 < d1)
+                                        break
+                        except Exception:
+                            pass
 
-                            # Filtrer nær kummen i linjenes CRS
-                            if limit_by_radius and _is_valid_number(E0_lin) and _is_valid_number(N0_lin):
-                                keep = []
-                                r2 = float(radius_m) * float(radius_m)
-                                for L in lines_list:
-                                    coords_EN = L["coords"]
-                                    if len(coords_EN) < 2:
-                                        continue
-                                    coords_test = coords_EN[::max(1, simplify_step)]
-                                    if min_dist2_to_polyline(coords_test, E0_lin, N0_lin) <= r2:
-                                        keep.append(L)
-                            else:
-                                keep = list(lines_list)
-
-                            fg_lines = folium.FeatureGroup(
-                                name=f"Linjer (VA/EL) – {min(len(keep), max_lines_keep)}/{len(keep)}"
-                            ).add_to(m)
-
-                            for L in keep[:max_lines_keep]:
-                                coords_EN = L["coords"][::max(1, simplify_step)]
-                                if len(coords_EN) < 2:
+                        # Filtrer, tynn og tegn
+                        fg_lines = folium.FeatureGroup(name="Linjer (VA/EL)").add_to(m)
+                        kept = 0
+                        for L in lines_list:
+                            coords_raw = L.get("coords") or []
+                            if len(coords_raw) < 2:
+                                continue
+                            # rens + tynn
+                            cleaned = []
+                            for idx, c in enumerate(coords_raw):
+                                if idx % max(1, simplify_step) != 0:
                                     continue
-                                path_latlon = to_wgs_list_C(coords_EN, int(epsg_lin))
-                                folium.PolyLine(
-                                    locations=path_latlon,
-                                    color="#5050C8",
-                                    weight=float(line_width_px),
-                                    opacity=0.9,
-                                    tooltip=L.get("objtype") or "linje",
-                                ).add_to(fg_lines)
+                                xy = _strip_xy(c)
+                                if xy: cleaned.append(xy)
+                            if len(cleaned) < 2:
+                                continue
+
+                            # til WGS84
+                            try:
+                                path_ll = _transform_points(cleaned, epsg_lin, swap_xy=swap_axes_guess)
+                            except Exception:
+                                try:
+                                    path_ll = _transform_points(cleaned, epsg_lin, swap_xy=False)
+                                except:
+                                    continue
+
+                            # radiusfilter (haversine)
+                            if limit_by_radius:
+                                near_ok = False
+                                for (latp, lonp) in path_ll:
+                                    if _haversine_m(lat_kum, lon_kum, latp, lonp) <= float(radius_m):
+                                        near_ok = True
+                                        break
+                                if not near_ok:
+                                    continue
+
+                            # tegn
+                            folium.PolyLine(
+                                locations=path_ll,
+                                color="#5050C8",
+                                weight=float(line_width_px),
+                                opacity=0.9,
+                                tooltip=L.get("objtype") or "linje",
+                            ).add_to(fg_lines)
+
+                            kept += 1
+                            if kept >= int(max_lines_keep):
+                                break
+
+                        st.caption(f"Tegnet {kept} linjer (akse-bytte={'ON' if swap_axes_guess else 'OFF'})")
 
                     # Rød forhåndslinje (heading-preview)
                     def latlon_from_heading(Ec, Nc, hd_deg, length_m):
@@ -1450,10 +1498,11 @@ with tabC:
                             st.session_state["MANUAL_HEADINGS"][sel] = float(hd2)
                             im_prev2 = draw_north_arrow(
                                 im0.copy(), _wrap_deg(hd2),
-                                size_px=arrow_size, color=arrow_col, outline=arrow_outline
+                                size_px=arrow_size, color=arrow_col, outline=arrow_outline,
+                                n_label_size=n_label_size
                             )
                             st.image(im_prev2, caption=f"Forhåndsvisning (2-klikk) = {hd2:.1f}°",
-                                     use_container_width=True)
+                                     use_column_width=True)
                         if st.button("Nullstill 2-klikk", key="C_clearclicks_btn"):
                             st.session_state[click_key + "_list"] = []
                     else:
@@ -1509,7 +1558,8 @@ with tabC:
 
                     if draw_arrow and _is_valid_number(hd):
                         im0 = draw_north_arrow(im0, _wrap_deg(hd), size_px=arrow_size,
-                                               color=arrow_col, outline=arrow_outline)
+                                               color=arrow_col, outline=arrow_outline,
+                                               n_label_size=n_label_size)
 
                     buf = io.BytesIO()
                     im0.save(buf, "jpeg", quality=95)
