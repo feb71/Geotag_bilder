@@ -1266,47 +1266,149 @@ with tabC:
 # ------------------------- Tab D: Oversiktskart -------------------------
 with tabD:
     st.subheader("D) Kart – oversikt")
-    line_width_D = st.slider("Linjebredde (oversiktskart, px)", 0.1, 8.0, 0.8, 0.1, key="D_line_width")
-    center_size_D = st.slider("Senterpunkt‑størrelse (px)", 0.1, 30.0, 6.0, 0.1, key="D_center_size")
+
+    line_width_D  = st.slider("Linjebredde (oversiktskart, px)", 0.1, 8.0, 0.8, 0.1, key="D_line_width")
+    center_size_D = st.slider("Senterpunkt-størrelse (px)",       0.1, 30.0, 6.0, 0.1, key="D_center_size")
+
+    show_centers = st.checkbox("Vis kummer", True, key="D_show_centers")
+    show_lines   = st.checkbox("Vis linjer",  True, key="D_show_lines")
+    label_centers = st.checkbox("Etikett på kummer (base_id)", True, key="D_label_centers")
+    label_lines   = st.checkbox("Etikett på linjer (objtype/navn)", True, key="D_label_lines")
+
     centers_df = st.session_state.get("CENTERS_DF")
-    lines = st.session_state.get("LINES_LIST")
+    lines      = st.session_state.get("LINES_LIST")
+
     try:
         import pydeck as pdk
         epsg_pts = st.session_state.get("POINTS_EPSG", 25832)
         epsg_lin = st.session_state.get("LINES_EPSG", 25832)
-        layers=[]
-        if centers_df is not None and not centers_df.empty:
+
+        layers = []
+        view_state = pdk.ViewState(latitude=59.91, longitude=10.75, zoom=10)
+
+        # --- KUMMER ---
+        if show_centers and (centers_df is not None) and (not centers_df.empty):
             tr_pts = Transformer.from_crs(epsg_pts, 4326, always_xy=True)
             tmp = centers_df.copy()
-            tmp["lon"], tmp["lat"] = zip(*[tr_pts.transform(e, n) for e,n in zip(tmp["center_E"], tmp["center_N"])])
-            tmp["color"] = [[0,150,255]]*len(tmp)
-            layers.append(pdk.Layer("ScatterplotLayer", tmp, get_position='[lon, lat]',
-                                    get_radius=center_size_D, radius_units="pixels", radius_min_pixels=0,
-                                    get_fill_color='color', pickable=True))
-            try:
-                layers.append(pdk.Layer("TextLayer", tmp, get_position='[lon, lat]', get_text="base_id", get_size=12, get_color=[0,0,0], get_angle=0, get_alignment_baseline="bottom"))
-            except Exception: pass
-            view_state = pdk.ViewState(latitude=float(tmp["lat"].mean()), longitude=float(tmp["lon"].mean()), zoom=16)
-        else:
-            view_state = pdk.ViewState(latitude=59.91, longitude=10.75, zoom=10)
+            tmp["lon"], tmp["lat"] = zip(*[tr_pts.transform(e, n) for e, n in zip(tmp["center_E"], tmp["center_N"])])
+            tmp["color"] = [[0, 150, 255]] * len(tmp)
 
-        if lines:
+            layers.append(
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    tmp,
+                    get_position='[lon, lat]',
+                    get_radius=center_size_D,
+                    radius_units="pixels",
+                    radius_min_pixels=0,
+                    get_fill_color='color',
+                    pickable=True,
+                )
+            )
+
+            if label_centers:
+                try:
+                    layers.append(
+                        pdk.Layer(
+                            "TextLayer",
+                            tmp,
+                            get_position='[lon, lat]',
+                            get_text="base_id",
+                            get_size=12,
+                            get_color=[0, 0, 0],
+                            get_angle=0,
+                            get_alignment_baseline="bottom",
+                        )
+                    )
+                except Exception:
+                    pass
+
+            view_state = pdk.ViewState(
+                latitude=float(tmp["lat"].mean()),
+                longitude=float(tmp["lon"].mean()),
+                zoom=16,
+            )
+
+        # --- LINJER ---
+        if show_lines and lines:
             if epsg_lin != 4326:
                 tr_lin = Transformer.from_crs(epsg_lin, 4326, always_xy=True)
-                def to_wgs_path(coords): return [[*tr_lin.transform(x,y)] for (x,y) in coords]
+                def to_wgs_path(coords): return [[*tr_lin.transform(x, y)] for (x, y) in coords]
+                def to_wgs_point(x, y):   return tr_lin.transform(x, y)
             else:
-                def to_wgs_path(coords): return [[x,y] for (x,y) in coords]
-            paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
-            layers.append(pdk.Layer("PathLayer", paths, get_path="path",
-                                    get_width=line_width_D, width_units="pixels", width_min_pixels=0,
-                                    get_color=[80,80,200]))
-        else:
-            st.info("Ingen linjer lastet eller tolket fra filen.")
+                def to_wgs_path(coords): return [[x, y] for (x, y) in coords]
+                def to_wgs_point(x, y):   return (x, y)
 
+            paths = [{"path": to_wgs_path(L["coords"])} for L in lines]
+            layers.append(
+                pdk.Layer(
+                    "PathLayer",
+                    paths,
+                    get_path="path",
+                    get_width=line_width_D,
+                    width_units="pixels",
+                    width_min_pixels=0,
+                    get_color=[80, 80, 200],
+                )
+            )
+
+            # Etiketter for linjer (midtpunkt på hver linje)
+            if label_lines:
+                import pandas as pd
+                lbl_rows = []
+                for L in lines:
+                    coords = L.get("coords") or []
+                    if len(coords) < 2:
+                        continue
+                    mid_i = len(coords) // 2
+                    mx, my = coords[mid_i]
+                    lon, lat = to_wgs_point(mx, my)
+                    text = str(L.get("objtype") or L.get("name") or "linje")
+                    lbl_rows.append({"lon": lon, "lat": lat, "label": text})
+
+                if lbl_rows:
+                    df_lbl = pd.DataFrame(lbl_rows)
+                    layers.append(
+                        pdk.Layer(
+                            "TextLayer",
+                            df_lbl,
+                            get_position='[lon, lat]',
+                            get_text="label",
+                            get_size=12,
+                            get_color=[80, 80, 200],
+                            get_angle=0,
+                            get_alignment_baseline="bottom",
+                        )
+                    )
+        else:
+            if not show_lines:
+                pass
+            else:
+                st.info("Ingen linjer lastet eller tolket fra filen.")
+
+        # Tegn
         st.pydeck_chart(pdk.Deck(map_style=None, layers=layers, initial_view_state=view_state), use_container_width=True)
-    except Exception as e:
+
+        # Enkel “legend” / påskrift av lag
+        st.markdown(
+            """
+            <div style="position:relative;margin-top:-40px;">
+              <div style="position:absolute;left:8px;top:8px;
+                          background:rgba(255,255,255,0.85);
+                          padding:6px 10px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
+                <b>Lag</b><br/>
+                <span style="color:#0096ff;">●</span> Kummer<br/>
+                <span style="color:#5050C8;">▬</span> Linjer
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    except Exception:
         st.info("Kunne ikke vise kart (pydeck mangler eller feil).")
 
 st.markdown("---")
-st.caption("v11.7 • Kart‑rotasjon (klikk for heading) • Speil/offset‑kalibrering • EXIF WGS84, LandXML/GeoJSON, 2‑klikk, CRS‑verktøy")
+st.caption("v11.7 • Kart-rotasjon (klikk for heading) • Speil/offset-kalibrering • EXIF WGS84, LandXML/GeoJSON, 2-klikk, CRS-verktøy")
+
 
