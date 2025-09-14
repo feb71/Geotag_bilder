@@ -1248,8 +1248,8 @@ with tabC:
 
                         # Ytelses-kontroller
                         limit_by_radius = st.checkbox("Begrens linjer til radius rundt kum", value=True, key="C_limit_lines")
-                        radius_m        = st.slider("Radius (m) for linjer", 10, 200, 60, key="C_radius_lines")
-                        max_lines_keep  = st.slider("Maks antall linjer å tegne", 50, 2000, 300, step=50, key="C_max_lines")
+                        radius_m        = st.slider("Radius (m) for linjer", 1, 200, 60, key="C_radius_lines")
+                        max_lines_keep  = st.slider("Maks antall linjer å tegne", 1, 2000, 300, step=50, key="C_max_lines")
                         simplify_step   = st.slider("Tynn ut vertex (hvert N-te punkt)", 1, 20, 3, key="C_simplify_lines")
 
                         def to_wgs_list_C(coords, src_epsg):
