@@ -1445,7 +1445,7 @@ Fullscreen(
 # vis kartet
 st_folium(m, height=700, width=None)  # øk height for «nesten full skjerm» i Streamlit
 
-    st_folium(m, height=600, width=None)
+st_folium(m, height=600, width=None)
 
 
 
