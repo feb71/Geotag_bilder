@@ -1035,109 +1035,136 @@ with tabB:
         except Exception as e:
             st.exception(e)
 
-# ------------------------- Tab C: Manuell/kart/2-klikk -------------------------
+# ------------------------- Tab C: Manuell pr. bilde + to-klikk / kart -------------------------
 with tabC:
+    st.subheader("C) Manuell pr. bilde + to-klikk / kart")
+
+    # Imports lokalt her for sikkerhet (ok å fjerne hvis du har dem globalt)
     import folium
-    from folium.plugins import Draw, Fullscreen
+    from folium.plugins import Fullscreen
     from streamlit_folium import st_folium
+    from pyproj import Transformer
 
-    st.subheader("C) Manuell / kart / 2-klikk")
+    centers_dict = st.session_state.get("CENTERS_DICT") or {}
+    epsg_pts     = st.session_state.get("POINTS_EPSG", 25832)
+    draw_arrow   = st.session_state.get("DRAW_ARROW", True)
+    arrow_size   = st.session_state.get("ARROW_SIZE", 120)
+    arrow_col    = st.session_state.get("ARROW_COLOR", (255, 255, 255))
+    arrow_outline= st.session_state.get("ARROW_OUTLINE", (0, 0, 0))
 
-    centers_dict  = st.session_state.get("CENTERS_DICT") or {}
-    epsg_pts      = st.session_state.get("POINTS_EPSG", 25832)
-    draw_arrow    = st.session_state.get("DRAW_ARROW", True)
-    arrow_size    = st.session_state.get("ARROW_SIZE", 120)
-    n_label_size  = st.session_state.get("N_LABEL_SIZE", 18)
-    arrow_col     = st.session_state.get("ARROW_COLOR", (255, 255, 255))
-    arrow_outline = st.session_state.get("ARROW_OUTLINE", (0, 0, 0))
-
-    # Slidere/valg for visning (tillater < 1 px)
-    line_width_px   = st.slider("Linjebredde (px)", 0.1, 12.0, 0.8, 0.1, key="C_line_w")
-    center_size_px  = st.slider("Punktstørrelse – kum-senter (px)", 0.1, 30.0, 3.0, 0.1, key="C_center_sz")
-    corner_size_px  = st.slider("Punktstørrelse – hjørne (px)", 0.1, 12.0, 1.0, 0.1, key="C_corner_sz")
-    show_center_lbl = st.checkbox("Etikett på kum-senter (base_id)", value=True,  key="C_show_center_lbl")
-    show_corner_lbl = st.checkbox("Etikett på hjørner (idx)",           value=True,  key="C_show_corner_lbl")
-if centers_dict:
+    if centers_dict:
         options = sorted(list(centers_dict.keys()))
         picked_label_C = st.selectbox("Velg kum/S_OBJID", options, key="C_pick_label")
-else:
-        picked_label_C=None; st.warning("Last opp punkter i sidepanelet.")
+    else:
+        picked_label_C = None
+        st.warning("Last opp punkter i sidepanelet.")
 
-    files_up_C = st.file_uploader("Dra inn bilder (flere)", type=["jpg","jpeg","png","tif","tiff","heic","heif"], accept_multiple_files=True, key="C_files")
-    if files_up_C and len(files_up_C)>0 and picked_label_C:
-        if "MANUAL_HEADINGS" not in st.session_state: st.session_state["MANUAL_HEADINGS"]={}
+    files_up_C = st.file_uploader(
+        "Dra inn bilder (flere)",
+        type=["jpg","jpeg","png","tif","tiff","heic","heif"],
+        accept_multiple_files=True,
+        key="C_files"
+    )
+
+    if files_up_C and len(files_up_C) > 0 and picked_label_C:
+        if "MANUAL_HEADINGS" not in st.session_state:
+            st.session_state["MANUAL_HEADINGS"] = {}
         man_dict = st.session_state["MANUAL_HEADINGS"]
-        names=[f.name for f in files_up_C]
-        sel = st.selectbox("Velg bilde", names, key="C_sel_name")
+
+        names = [f.name for f in files_up_C]
+        sel   = st.selectbox("Velg bilde", names, key="C_sel_name")
         cur_idx = names.index(sel) if sel in names else 0
 
-        colL, colR = st.columns([2,1])
+        colL, colR = st.columns([2, 1])
+
         with colL:
-            f = files_up_C[cur_idx]; payload = f.read(); f.seek(0)
-            im0 = Image.open(io.BytesIO(payload)); im0 = normalize_orientation(im0).convert("RGB")
+            f = files_up_C[cur_idx]
+            payload = f.read(); f.seek(0)
+            im0 = Image.open(io.BytesIO(payload))
+            im0 = normalize_orientation(im0).convert("RGB")
+
             info = centers_dict.get(picked_label_C, {})
             E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
 
-            E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label_C, E0,N0, Alt0, None, manual_override=None)
+            E, N, Alt, hd, cent, line_h, dist = choose_pos_and_heading(
+                picked_label_C, E0, N0, Alt0, None, manual_override=None
+            )
+
             cur_manual = man_dict.get(sel)
             show_hd = cur_manual if _is_valid_number(cur_manual) else hd
             show_hd = apply_heading_calibration(show_hd)
 
             if draw_arrow and _is_valid_number(show_hd):
-                im_prev = draw_north_arrow(im0.copy(), _wrap_deg(show_hd), size_px=arrow_size, color=arrow_col, outline=arrow_outline)
+                im_prev = draw_north_arrow(
+                    im0.copy(), _wrap_deg(show_hd),
+                    size_px=arrow_size, color=arrow_col, outline=arrow_outline
+                )
             else:
                 im_prev = im0
-            st.image(im_prev, caption=f"Forhåndsvisning – heading={show_hd if show_hd is not None else '—'}°", use_column_width=True)
 
+            st.image(
+                im_prev,
+                caption=f"Forhåndsvisning – heading={show_hd if show_hd is not None else '—'}°",
+                use_container_width=True
+            )
+
+            # ---- KART (klikk for å sette nord) ----
             with st.expander("Orienter i KART (klikk for å sette nord)"):
                 if E0 is not None and N0 is not None:
                     lat0, lon0 = transform_EN_to_wgs84(E0, N0, epsg_pts)
-                    # start med gjeldende heading (kalibrering IKKE brukt for beregning, bare visning)
+
                     base_hd = man_dict.get(sel, hd if _is_valid_number(hd) else 0.0) or 0.0
                     base_hd = float(base_hd)
-                    Lm = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key="C_line_len")
-                    # gi brukeren en finjusterings-slider
-                    adj = st.slider("Finjustering (°)", -180, 180, 0, 1, key="C_line_adj")
+                    Lm  = st.slider("Linjelengde (meter)", 2.0, 20.0, 8.0, 0.5, key="C_line_len")
+                    adj = st.slider("Finjustering (°)",   -180, 180, 0, 1,   key="C_line_adj")
 
-                    # bygg kart
-                    m = folium.Map(location=[lat0, lon0], zoom_start=19, tiles="OpenStreetMap", control_scale=True)
-                    folium.CircleMarker([lat0,lon0], radius=5, color="#0096ff", fill=True, fill_opacity=0.9).add_to(m)
+                    m = folium.Map(location=[lat0, lon0], zoom_start=19,
+                                   tiles="OpenStreetMap", control_scale=True)
+                    Fullscreen(position="topleft", title="Fullskjerm",
+                               title_cancel="Avslutt", force=True,
+                               force_separate_button=True).add_to(m)
 
-                    # hvis vi har en heading, tegn rød linje
-                    def latlon_from_heading(Ec,Nc, hd_deg, length_m):
+                    folium.CircleMarker([lat0, lon0], radius=5, color="#0096ff",
+                                        fill=True, fill_opacity=0.9).add_to(m)
+
+                    def latlon_from_heading(Ec, Nc, hd_deg, length_m):
                         rad = math.radians(hd_deg)
-                        E1 = Ec + math.sin(rad)*length_m
-                        N1 = Nc + math.cos(rad)*length_m
+                        E1  = Ec + math.sin(rad) * length_m
+                        N1  = Nc + math.cos(rad) * length_m
                         lt, ln = transform_EN_to_wgs84(E1, N1, epsg_pts)
                         return lt, ln
 
-                    lt1, ln1 = latlon_from_heading(E0,N0, base_hd+adj, Lm)
-                    folium.PolyLine(locations=[[lat0,lon0],[lt1,ln1]], color="#c83c3c", weight=5).add_to(m)
-                    folium.Marker([lt1,ln1], draggable=False, icon=folium.Icon(color="red", icon="compass")).add_to(m)
+                    lt1, ln1 = latlon_from_heading(E0, N0, base_hd + adj, Lm)
+                    folium.PolyLine([[lat0, lon0], [lt1, ln1]],
+                                    color="#c83c3c", weight=5).add_to(m)
+                    folium.Marker([lt1, ln1], draggable=False,
+                                  icon=folium.Icon(color="red", icon="compass")).add_to(m)
                     folium.LatLngPopup().add_to(m)
-                    out = st_folium(m, height=420, width=None)
+
+                    # unik key per kum + bilde (hindrer caching-problemer)
+                    out = st_folium(m, height=420, width=None,
+                                    key=f"C_map_{picked_label_C}_{sel}")
 
                     new_hd = None
                     if out and out.get("last_clicked") is not None:
-                        click = out["last_clicked"]
-                        latc, lonc = click["lat"], click["lng"]
-                        # konverter klikk til E/N (samme EPSG som punktene)
+                        latc, lonc = out["last_clicked"]["lat"], out["last_clicked"]["lng"]
                         tr = Transformer.from_crs(4326, epsg_pts, always_xy=True)
                         Ex, Ny = tr.transform(lonc, latc)
                         dx = Ex - E0; dy = Ny - N0
                         new_hd = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
                         st.info(f"Ny heading fra kart-klikk: {new_hd:.1f}°")
 
-                    # lagre
                     if st.button("Lagre heading (kart)", key="C_save_map"):
                         final_hd = new_hd if _is_valid_number(new_hd) else (base_hd + adj)
                         st.session_state["MANUAL_HEADINGS"][sel] = float(_wrap_deg(final_hd))
                         st.success(f"Lagret {sel}: {_wrap_deg(final_hd):.1f}°")
                 else:
                     st.warning("Mangler E/N for kum-senter.")
+
+            # ---- 2-klikk i bilde (uendret logikk) ----
             with st.expander("Orienter med 2 hjørner (klikk i bildet)"):
                 pts_df = st.session_state.get("POINTS_DF")
-                delims_val = st.session_state.get("SB_delims", "-_ ./") if "SB_delims" in st.session_state else "-_ ./"
+                delims_val = st.session_state.get("SB_delims", "-_ ./")
                 base_lbl = base_id(picked_label_C, delims_val) if picked_label_C else None
                 corners_df = None
                 if pts_df is not None and base_lbl:
@@ -1147,7 +1174,7 @@ else:
                         tmp["_base"] = tmp[cols["sobj"]].astype(str).map(lambda s: base_id(s, delims_val))
                         grp = tmp[tmp["_base"] == base_lbl]
                         if len(grp) >= 2:
-                            corners_df = grp.rename(columns={cols["east"]:"E", cols["north"]:"N"}).reset_index(drop=True)
+                            corners_df = grp.rename(columns={cols["east"]: "E", cols["north"]: "N"}).reset_index(drop=True)
 
                 if corners_df is None or len(corners_df) < 2:
                     st.info("Finner ikke minst 2 hjørner for denne kummen i opplastet punktfil.")
@@ -1155,8 +1182,9 @@ else:
                     corners_df = corners_df.reset_index(drop=True).copy()
                     corners_df["idx"] = corners_df.index
                     show_cols = ["idx"]
-                    if "S_OBJID" in corners_df.columns: show_cols.append("S_OBJID")
-                    show_cols += [c for c in ["E","N"] if c in corners_df.columns]
+                    if "S_OBJID" in corners_df.columns:
+                        show_cols.append("S_OBJID")
+                    show_cols += [c for c in ["E", "N"] if c in corners_df.columns]
                     st.dataframe(corners_df[show_cols].head(30), use_container_width=True)
 
                     st.caption("Klikk først Hjørne A, deretter Hjørne B i bildet:")
@@ -1164,15 +1192,15 @@ else:
                     coords = img_coords(im0, key=click_key)
                     if coords:
                         clicks = st.session_state.get(click_key + "_list", [])
-                        if not clicks or (clicks and (clicks[-1] != (coords['x'], coords['y']))):
+                        if (not clicks) or (clicks and (clicks[-1] != (coords["x"], coords["y"]))):
                             clicks.append((coords["x"], coords["y"]))
                             clicks = clicks[-2:]
                             st.session_state[click_key + "_list"] = clicks
                     clicks = st.session_state.get(click_key + "_list", [])
                     st.write(f"Klikk: {clicks}")
 
-                    idxA = st.number_input("Indeks hjørne A (radnr 0..)", min_value=0, max_value=len(corners_df)-1, value=0, key="C_cA_idx")
-                    idxB = st.number_input("Indeks hjørne B (radnr 0..)", min_value=0, max_value=len(corners_df)-1, value=min(1, len(corners_df)-1), key="C_cB_idx")
+                    idxA = st.number_input("Indeks hjørne A (radnr 0..)", min_value=0, max_value=len(corners_df) - 1, value=0, key="C_cA_idx")
+                    idxB = st.number_input("Indeks hjørne B (radnr 0..)", min_value=0, max_value=len(corners_df) - 1, value=min(1, len(corners_df) - 1), key="C_cB_idx")
                     EA = parse_float_maybe_comma(corners_df.loc[idxA, "E"]) if 0 <= idxA < len(corners_df) else None
                     NA = parse_float_maybe_comma(corners_df.loc[idxA, "N"]) if 0 <= idxA < len(corners_df) else None
                     EB = parse_float_maybe_comma(corners_df.loc[idxB, "E"]) if 0 <= idxB < len(corners_df) else None
@@ -1180,39 +1208,51 @@ else:
 
                     if _is_valid_number(EA) and _is_valid_number(NA) and _is_valid_number(EB) and _is_valid_number(NB):
                         if len(clicks) == 2:
-                            (xA,yA),(xB,yB) = clicks
+                            (xA, yA), (xB, yB) = clicks
                             az_real = (math.degrees(math.atan2(EB - EA, NB - NA)) + 360.0) % 360.0
                             az_img  = (math.degrees(math.atan2(xB - xA, -(yB - yA))) + 360.0) % 360.0
                             hd2 = (az_real - az_img) % 360.0
                             st.success(f"Beregnet heading = {hd2:.1f}° (lagres som manuell)")
                             st.session_state["MANUAL_HEADINGS"][sel] = float(hd2)
-                            im_prev2 = draw_north_arrow(im0.copy(), _wrap_deg(hd2), size_px=arrow_size, color=arrow_col, outline=arrow_outline)
-                            st.image(im_prev2, caption=f"Forhåndsvisning (2‑klikk) = {hd2:.1f}°", use_column_width=True)
-                        if st.button("Nullstill 2‑klikk", key="C_clearclicks_btn"):
+                            im_prev2 = draw_north_arrow(
+                                im0.copy(), _wrap_deg(hd2),
+                                size_px=arrow_size, color=arrow_col, outline=arrow_outline
+                            )
+                            st.image(im_prev2, caption=f"Forhåndsvisning (2-klikk) = {hd2:.1f}°",
+                                     use_container_width=True)
+                        if st.button("Nullstill 2-klikk", key="C_clearclicks_btn"):
                             st.session_state[click_key + "_list"] = []
                     else:
                         st.warning("Ugyldige E/N for valgte hjørner.")
 
         with colR:
             st.markdown("**Sett heading for valgt bilde**")
-            if not _is_valid_number(hd): st.info("Ingen heading funnet automatisk – sett manuelt, i kart eller med 2‑klikk.")
+            if not _is_valid_number(hd):
+                st.info("Ingen heading funnet automatisk – sett manuelt, i kart eller med 2-klikk.")
             cur_manual = st.session_state["MANUAL_HEADINGS"].get(sel)
             base_val = int(cur_manual if _is_valid_number(cur_manual) else int(hd or 0))
             man_val = st.slider("Manuell heading (0–359°)", 0, 359, base_val, key="C_slider")
-            c1,c2,c3 = st.columns(3)
-            if c1.button("−10°", key="C_m10"): man_val = (man_val-10)%360; st.session_state["C_slider"]=man_val
-            if c2.button("+10°", key="C_p10"): man_val = (man_val+10)%360; st.session_state["C_slider"]=man_val
-            if c3.button("Flip 180°", key="C_flip"): man_val = (man_val+180)%360; st.session_state["C_slider"]=man_val
+            c1, c2, c3 = st.columns(3)
+            if c1.button("−10°", key="C_m10"):
+                man_val = (man_val - 10) % 360; st.session_state["C_slider"] = man_val
+            if c2.button("+10°", key="C_p10"):
+                man_val = (man_val + 10) % 360; st.session_state["C_slider"] = man_val
+            if c3.button("Flip 180°", key="C_flip"):
+                man_val = (man_val + 180) % 360; st.session_state["C_slider"] = man_val
             if st.button("Lagre heading (manuell)", key="C_save_one"):
-                st.session_state["MANUAL_HEADINGS"][sel]=float(man_val); st.success(f"Lagret {sel}: {man_val}°")
+                st.session_state["MANUAL_HEADINGS"][sel] = float(man_val)
+                st.success(f"Lagret {sel}: {man_val}°")
 
         st.markdown("---")
         if st.button("Eksporter alle som ZIP (med heading der satt)", key="C_export"):
-            processed=0; skipped=[]; zout_mem=io.BytesIO(); zout=zipfile.ZipFile(zout_mem,"w",zipfile.ZIP_DEFLATED)
+            processed = 0; skipped = []
+            zout_mem = io.BytesIO(); zout = zipfile.ZipFile(zout_mem, "w", zipfile.ZIP_DEFLATED)
             for f in files_up_C:
                 try:
-                    payload=f.read(); f.seek(0)
-                    im0 = Image.open(io.BytesIO(payload)); im0 = normalize_orientation(im0).convert("RGB")
+                    payload = f.read(); f.seek(0)
+                    im0 = Image.open(io.BytesIO(payload))
+                    im0 = normalize_orientation(im0).convert("RGB")
+
                     info = centers_dict.get(picked_label_C, {})
                     E0 = info.get("center_E"); N0 = info.get("center_N"); Alt0 = info.get("hoyde")
 
@@ -1220,28 +1260,36 @@ else:
                     if man is None and f.name == sel:
                         man = st.session_state["MANUAL_HEADINGS"].get(sel)
 
-                    E,N,Alt,hd,cent,line_h,dist = choose_pos_and_heading(picked_label_C, E0,N0, Alt0, None, manual_override=man if man is not None else None)
-                    if E is None or N is None: skipped.append({"file":f.name,"reason":"Mangler E/N"}); continue
+                    E, N, Alt, hd, cent, line_h, dist = choose_pos_and_heading(
+                        picked_label_C, E0, N0, Alt0, None,
+                        manual_override=man if man is not None else None
+                    )
+                    if E is None or N is None:
+                        skipped.append({"file": f.name, "reason": "Mangler E/N"})
+                        continue
 
                     hd = apply_heading_calibration(hd)
-
                     lat, lon = transform_EN_to_wgs84(E, N, epsg_pts)
                     if draw_arrow and _is_valid_number(hd):
-                        im0 = draw_north_arrow(im0, _wrap_deg(hd), size_px=arrow_size, color=arrow_col, outline=arrow_outline)
-                    buf=io.BytesIO(); im0.save(buf,"jpeg", quality=95); buf.seek(0)
+                        im0 = draw_north_arrow(im0, _wrap_deg(hd), size_px=arrow_size,
+                                               color=arrow_col, outline=arrow_outline)
+                    buf = io.BytesIO(); im0.save(buf, "jpeg", quality=95); buf.seek(0)
                     jpeg1 = write_exif_jpeg_bytes(buf.getvalue(), lat, lon, Alt, hd)
                     newname = f"{picked_label_C}_{os.path.splitext(os.path.basename(f.name))[0]}.jpg"
-                    zout.writestr(newname, jpeg1); processed+=1
+                    zout.writestr(newname, jpeg1); processed += 1
                 except Exception as e:
                     skipped.append({"file": f.name, "reason": str(e)})
             zout.close()
-            if processed>0:
-                st.download_button("Last ned ZIP (Tab C)", data=zout_mem.getvalue(), file_name="geotag_manual.zip", mime="application/zip")
+            if processed > 0:
+                st.download_button("Last ned ZIP (Tab C)", data=zout_mem.getvalue(),
+                                   file_name="geotag_manual.zip", mime="application/zip")
                 st.success(f"Skrev {processed} bilder.")
             if skipped:
-                st.warning("Hoppet over:"); st.dataframe(pd.DataFrame(skipped))
+                st.warning("Hoppet over:")
+                st.dataframe(pd.DataFrame(skipped))
     else:
         st.info("Last opp bilder og velg kum for manuell forhåndsvisning.")
+
 
  
 
