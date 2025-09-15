@@ -738,11 +738,12 @@ def choose_pos_and_heading(sobj_label=None, E=None, N=None, Alt=None, Rot=None, 
 
 # ------------------------- Tabs -------------------------
 
-tabA, tabB, tabC, tabD = st.tabs([
+tabA, tabB, tabC, tabD, tabE = st.tabs([
     "A) Batch geotagg",
     "B) Målebok (punkter+bilder)",
     "C) Manuell / kart / 2-klikk",
-    "D) Kart"
+    "D) Kart",
+    "E) Kopiere egenskaper",
 ])
 
 # ------------------------- Tab A: Batch -------------------------
