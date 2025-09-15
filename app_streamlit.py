@@ -1639,6 +1639,345 @@ with tabD:
 #     vis kartet
     st_folium(m, height=700, width=None)  # øk height for «nesten full skjerm» i Streamlit
 
+# ------------------------- Tab E: Attributtoverføring Teori → Innmålt -------------------------
+with tabE:
+    st.subheader("E) Attributtoverføring: Teoretisk → Innmålt (linje til linje)")
+
+    import io, os, json, math, zipfile
+    import pandas as pd
+    import xml.etree.ElementTree as ET
+    from pyproj import Transformer
+    import folium
+    from folium.plugins import Fullscreen
+    from streamlit_folium import st_folium
+
+    # ---------- Hjelpere ----------
+    def _to_float(v):
+        if isinstance(v, (int, float)): return float(v)
+        if isinstance(v, str):
+            vs = v.strip().replace(" ", "").replace("\u00A0","").replace(",", ".")
+            try: return float(vs)
+            except: return None
+        return None
+
+    def _strip_xy(seq):
+        """Tar en liste/tuple [x,y] eller [x,y,z] -> (x,y) som float. Returnerer None ved feil."""
+        if seq is None or len(seq) < 2: return None
+        x = _to_float(seq[0]); y = _to_float(seq[1])
+        return (x, y) if x is not None and y is not None else None
+
+    def transform_path(coords_xy, epsg_src, epsg_dst):
+        """Transformer polyline coords [(x,y), ...] fra epsg_src til epsg_dst."""
+        tr = Transformer.from_crs(int(epsg_src), int(epsg_dst), always_xy=True)
+        out = []
+        for (x, y) in coords_xy:
+            X, Y = tr.transform(x, y)
+            out.append((X, Y))
+        return out
+
+    def transform_point(x, y, epsg_src, epsg_dst):
+        tr = Transformer.from_crs(int(epsg_src), int(epsg_dst), always_xy=True)
+        X, Y = tr.transform(x, y)
+        return X, Y
+
+    def min_dist2_to_polyline(coords_EN, px, py):
+        """Min kvadratisk avstand fra punkt (px,py) til polyline coords_EN (samme CRS)."""
+        best = float("inf")
+        if len(coords_EN) < 2: return best
+        for i in range(len(coords_EN)-1):
+            x1, y1 = coords_EN[i]; x2, y2 = coords_EN[i+1]
+            vx, vy = (x2-x1), (y2-y1)
+            wx, wy = (px-x1), (py-y1)
+            L2 = vx*vx + vy*vy
+            t = 0.0 if L2 == 0 else max(0.0, min(1.0, (wx*vx + wy*vy) / L2))
+            px2 = x1 + t*vx; py2 = y1 + t*vy
+            d2 = (px2 - px)**2 + (py2 - py)**2
+            if d2 < best: best = d2
+        return best
+
+    def to_wgs84(coords_xy, epsg_src):
+        """Til WGS84 for kart (returnerer [(lat,lon), ...])."""
+        tr = Transformer.from_crs(int(epsg_src), 4326, always_xy=True)
+        out = []
+        for (x, y) in coords_xy:
+            lon, lat = tr.transform(x, y)
+            out.append((lat, lon))
+        return out
+
+    # ---------- Parsere ----------
+    def load_geojson_lines(file_bytes):
+        """Les GeoJSON/JSON; returnerer liste av dict:
+           {"coords": [(x,y),...], "props": {...}, "name": "id/navn"} i samme CRS (antatt WGS84 hvis ikke annet)."""
+        data = json.loads(file_bytes.decode("utf-8"))
+        feats = data.get("features", [])
+        out = []
+        for f in feats:
+            g = f.get("geometry") or {}
+            t = g.get("type")
+            props = f.get("properties") or {}
+            name = props.get("name") or props.get("id") or props.get("S_OBJID") or ""
+            if t == "LineString":
+                coords = g.get("coordinates", [])
+                # kan være [lon,lat] eller [x,y] i annen CRS – vi håndterer CRS senere med EPSG-override
+                xy = []
+                for c in coords:
+                    if isinstance(c, (list, tuple)) and len(c) >= 2:
+                        xy.append((_to_float(c[0]), _to_float(c[1])))
+                xy = [p for p in xy if None not in p]
+                if len(xy) >= 2:
+                    out.append({"coords": xy, "props": dict(props), "name": name})
+            elif t == "MultiLineString":
+                for part in g.get("coordinates", []):
+                    xy = []
+                    for c in part:
+                        if isinstance(c, (list, tuple)) and len(c) >= 2:
+                            xy.append((_to_float(c[0]), _to_float(c[1])))
+                    xy = [p for p in xy if None not in p]
+                    if len(xy) >= 2:
+                        out.append({"coords": xy, "props": dict(props), "name": name})
+        return out
+
+    def load_landxml_lines(file_bytes):
+        """Rimelig robust LandXML-leser: henter ut sekvenser fra PntList2D/3D + enkle <Line><Start>/<End>.
+           Returnerer [{"coords":[(x,y),...], "props":{}, "name": "..."}]."""
+        out = []
+        root = ET.fromstring(file_bytes)
+        ns = {}
+        # PntList2D / 3D (vanlig i Gemini)
+        for el in root.iter():
+            tag = el.tag.split("}")[-1].lower()
+            if tag in ("pntlist2d", "pntlist3d"):
+                txt = (el.text or "").strip()
+                if not txt: continue
+                nums = []
+                for tok in txt.replace("\n"," ").split():
+                    v = _to_float(tok); 
+                    if v is not None: nums.append(v)
+                pts = []
+                step = 2 if tag == "pntlist2d" else 3
+                for i in range(0, len(nums)-step+1, step):
+                    x = nums[i]; y = nums[i+1]
+                    if x is not None and y is not None:
+                        pts.append((x, y))
+                if len(pts) >= 2:
+                    out.append({"coords": pts, "props": {}, "name": ""})
+            # fallback for <Line><Start>/<End> (i Alignments)
+            if tag == "line":
+                start = None; end = None
+                for child in el:
+                    ctag = child.tag.split("}")[-1].lower()
+                    if ctag in ("start","end"):
+                        txt = (child.text or "").strip()
+                        parts = [p for p in txt.replace(",", " ").split() if p]
+                        if len(parts) >= 2:
+                            x = _to_float(parts[0]); y = _to_float(parts[1])
+                            if x is not None and y is not None:
+                                if ctag == "start": start = (x, y)
+                                else: end = (x, y)
+                if start and end:
+                    out.append({"coords": [start, end], "props": {}, "name": ""})
+        return out
+
+    # ---------- UI: last inn to filer ----------
+    st.markdown("**1) Last inn teoretisk linjedata** (GeoJSON/JSON/LandXML)")
+    theo_file = st.file_uploader("Teoretisk", type=["geojson","json","xml"], key="E_theo")
+    epsg_theo = st.number_input("EPSG for teoretisk datasett", min_value=2000, max_value=9000, value=25832, step=1, key="E_epsg_theo")
+
+    st.markdown("**2) Last inn innmålt linjedata** (GeoJSON/JSON/LandXML)")
+    meas_file = st.file_uploader("Innmålt", type=["geojson","json","xml"], key="E_meas")
+    epsg_meas = st.number_input("EPSG for innmålt datasett", min_value=2000, max_value=9000, value=25832, step=1, key="E_epsg_meas")
+
+    # Last og parse
+    def read_lines(uploaded):
+        if not uploaded: return []
+        b = uploaded.read(); uploaded.seek(0)
+        name = uploaded.name.lower()
+        if name.endswith(".geojson") or name.endswith(".json"):
+            return load_geojson_lines(b)
+        if name.endswith(".xml"):
+            return load_landxml_lines(b)
+        return []
+
+    theo = read_lines(theo_file)
+    meas = read_lines(meas_file)
+
+    # lagre i session så valg holder seg mellom reruns
+    if theo: st.session_state["E_THEO"] = theo
+    if meas: st.session_state["E_MEAS"] = meas
+    theo = st.session_state.get("E_THEO", [])
+    meas = st.session_state.get("E_MEAS", [])
+
+    if not theo and not meas:
+        st.info("Last minst ett datasett for å starte.")
+        st.stop()
+
+    # ---------- Kartparametre ----------
+    st.markdown("**3) Kart og utvalg**")
+    pick_threshold = st.slider("Maks avstand fra klikk til linje (meter)", 0.1, 10.0, 2.0, 0.1, key="E_thresh")
+    w_theo = st.slider("Linjebredde – teoretisk (px)", 0.1, 6.0, 2.0, 0.1, key="E_wt")
+    w_meas = st.slider("Linjebredde – innmålt (px)", 0.1, 6.0, 2.0, 0.1, key="E_wm")
+
+    # Finn kart-senter (bruk første som finnes)
+    lat0, lon0 = 59.91, 10.75
+    try:
+        if theo:
+            latlon = to_wgs84(theo[0]["coords"], epsg_theo)
+            lat0, lon0 = latlon[0][0], latlon[0][1]
+        elif meas:
+            latlon = to_wgs84(meas[0]["coords"], epsg_meas)
+            lat0, lon0 = latlon[0][0], latlon[0][1]
+    except Exception:
+        pass
+
+    # ---------- Kart ----------
+    m = folium.Map(location=[lat0, lon0], zoom_start=18, tiles=None, control_scale=True, max_zoom=23)
+    folium.TileLayer(
+        tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attr="© OpenStreetMap contributors", name="OSM", max_zoom=19
+    ).add_to(m)
+    folium.TileLayer(
+        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+        name="Esri imagery", max_zoom=23
+    ).add_to(m)
+    folium.LayerControl(collapsed=False).add_to(m)
+    Fullscreen(position="topleft", force=True, force_separate_button=True).add_to(m)
+
+    # Tegn teoretisk (blå)
+    fg_theo = folium.FeatureGroup(name=f"Teoretisk ({len(theo)})", show=True).add_to(m)
+    for i, L in enumerate(theo):
+        try:
+            path_ll = to_wgs84(L["coords"], epsg_theo)
+            folium.PolyLine(path_ll, color="#1f77b4", weight=float(w_theo), opacity=0.9,
+                            tooltip=f"Teoretisk #{i} | {L.get('name','')}").add_to(fg_theo)
+        except Exception:
+            continue
+
+    # Tegn innmålt (oransje)
+    fg_meas = folium.FeatureGroup(name=f"Innmålt ({len(meas)})", show=True).add_to(m)
+    for j, L in enumerate(meas):
+        try:
+            path_ll = to_wgs84(L["coords"], epsg_meas)
+            folium.PolyLine(path_ll, color="#ff7f0e", weight=float(w_meas), opacity=0.9,
+                            tooltip=f"Innmålt #{j} | {L.get('name','')}").add_to(fg_meas)
+        except Exception:
+            continue
+
+    st.markdown("**Klikk i kartet for å velge nærmeste linje.** Velg hvilket lag klikket skal gjelde:")
+    target_layer = st.radio("Velg lag for klikk", ["Teoretisk", "Innmålt"], horizontal=True, key="E_target")
+
+    out = st_folium(m, height=520, width=None, key="E_map")
+
+    # ---------- Plukk nærmeste linje ved klikk ----------
+    if "E_SEL_THEO" not in st.session_state: st.session_state["E_SEL_THEO"] = None
+    if "E_SEL_MEAS" not in st.session_state: st.session_state["E_SEL_MEAS"] = None
+
+    if out and out.get("last_clicked") is not None:
+        latc = out["last_clicked"]["lat"]; lonc = out["last_clicked"]["lng"]
+
+        if target_layer == "Teoretisk" and theo:
+            # klikk til teoretisk EPSG
+            x0, y0 = transform_point(lonc, latc, 4326, epsg_theo)  # obs always_xy=True -> (lon,lat)
+            best_idx = None; best_d2 = float("inf")
+            thr2 = pick_threshold * pick_threshold
+            for i, L in enumerate(theo):
+                d2 = min_dist2_to_polyline(L["coords"], x0, y0)  # begge i epsg_theo
+                if d2 < best_d2:
+                    best_d2 = d2; best_idx = i
+            # vi har brukt "meter-ish" CRS; hvis EPSG er geografisk vil d2 ikke være meter^2
+            # men vi antar oppgitt EPSG er et projisert (EPSG:258xx / 511x / NTM) for vei/VA.
+            if best_idx is not None and best_d2 <= thr2:
+                st.session_state["E_SEL_THEO"] = best_idx
+                st.success(f"Valgt teoretisk linje #{best_idx}")
+            else:
+                st.warning("Fant ingen teoretisk linje innenfor terskel.")
+
+        if target_layer == "Innmålt" and meas:
+            x0, y0 = transform_point(lonc, latc, 4326, epsg_meas)
+            best_idx = None; best_d2 = float("inf")
+            thr2 = pick_threshold * pick_threshold
+            for j, L in enumerate(meas):
+                d2 = min_dist2_to_polyline(L["coords"], x0, y0)
+                if d2 < best_d2:
+                    best_d2 = d2; best_idx = j
+            if best_idx is not None and best_d2 <= thr2:
+                st.session_state["E_SEL_MEAS"] = best_idx
+                st.success(f"Valgt innmålt linje #{best_idx}")
+            else:
+                st.warning("Fant ingen innmålt linje innenfor terskel.")
+
+    sel_theo = st.session_state.get("E_SEL_THEO")
+    sel_meas = st.session_state.get("E_SEL_MEAS")
+
+    cA, cB = st.columns(2)
+    with cA:
+        st.markdown("**Valgt teoretisk:**")
+        if sel_theo is not None and 0 <= sel_theo < len(theo):
+            st.json(theo[sel_theo].get("props") or {})
+        else:
+            st.info("Ingen teoretisk linje valgt.")
+
+    with cB:
+        st.markdown("**Valgt innmålt:**")
+        if sel_meas is not None and 0 <= sel_meas < len(meas):
+            st.json(meas[sel_meas].get("props") or {})
+        else:
+            st.info("Ingen innmålt linje valgt.")
+
+    # ---------- Kopier felter ----------
+    st.markdown("---")
+    st.markdown("**4) Overfør egenskaper (felter) → innmålt**")
+
+    if sel_theo is not None and sel_meas is not None:
+        src_props = theo[sel_theo].get("props") or {}
+        if not src_props:
+            st.warning("Teoretisk linje har ingen egenskaper å kopiere.")
+        else:
+            keys = list(src_props.keys())
+            to_copy = st.multiselect("Velg felter som skal kopieres", keys, default=keys)
+            prefix  = st.text_input("Prefiks på feltnavn (valgfritt)", value="", placeholder="f.eks. TEORI_", key="E_prefix")
+            if st.button("Kopier valgte felter → innmålt", key="E_do_copy"):
+                dst = meas[sel_meas].setdefault("props", {})
+                for k in to_copy:
+                    v = src_props.get(k)
+                    dst[(prefix + k) if prefix else k] = v
+                # logg
+                log = st.session_state.get("E_COPY_LOG", [])
+                log.append({"theo_idx": sel_theo, "meas_idx": sel_meas, "fields": to_copy, "prefix": prefix})
+                st.session_state["E_COPY_LOG"] = log
+                st.success(f"Kopiert {len(to_copy)} felt fra teoretisk #{sel_theo} → innmålt #{sel_meas}.")
+    else:
+        st.info("Velg både teoretisk og innmålt linje for å kopiere.")
+
+    # Vis logg
+    log = st.session_state.get("E_COPY_LOG", [])
+    if log:
+        st.markdown("**Logg**")
+        st.dataframe(pd.DataFrame(log), use_container_width=True)
+
+    # ---------- Eksport ----------
+    st.markdown("---")
+    st.markdown("**5) Eksporter oppdatert innmålt som GeoJSON**")
+    export_epsg = st.radio("Koordinater i eksport", ["WGS84 (EPSG:4326)", f"Original EPSG ({epsg_meas})"], horizontal=True, key="E_exp_crs")
+    if st.button("Last ned oppdatert innmålt (GeoJSON)", key="E_export"):
+        feats = []
+        for L in meas:
+            coords = L["coords"]
+            props  = L.get("props") or {}
+            if export_epsg.startswith("WGS84"):
+                ll = to_wgs84(coords, epsg_meas)  # [(lat,lon)]
+                gj_coords = [[lon, lat] for (lat, lon) in ll]
+                geom = {"type":"LineString","coordinates": gj_coords}
+            else:
+                # behold original EPSG i koordinater (GeoJSON spes nekter annet enn lon/lat, men mange verktøy håndterer det)
+                gj_coords = [[float(x), float(y)] for (x, y) in coords]
+                geom = {"type":"LineString","coordinates": gj_coords}
+
+            feats.append({"type":"Feature", "geometry": geom, "properties": props})
+
+        fc = {"type":"FeatureCollection","features": feats}
+        data = json.dumps(fc, ensure_ascii=False).encode("utf-8")
+        st.download_button("Last ned GeoJSON", data=data, file_name="innmalt_oppdatert.geojson", mime="application/geo+json")
 
 
 
