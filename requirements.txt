@@ -7,8 +7,5 @@ openpyxl>=3.1
 pydeck>=0.8
 pillow-heif>=0.16
 streamlit-image-coordinates>=0.1.6
-ezdxf==1.3.0
-lxml==5.2.1        # (kun hvis du velger å bruke lxml – koden over klarer seg uten)
-pyproj>=3.6.0
-streamlit-folium>=0.20.0
-folium>=0.16.0
+streamlit-folium
+folium
