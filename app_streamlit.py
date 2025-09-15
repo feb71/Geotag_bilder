@@ -1777,7 +1777,7 @@ with tabE:
     epsg_theo = st.number_input("EPSG for teoretisk datasett (projisert, f.eks 25832/5110)", min_value=2000, max_value=99999, value=25832, step=1, key="E_epsg_theo")
 
     meas_file = st.file_uploader("Innmålt (GeoJSON/JSON eller LandXML)", type=["geojson","json","xml"], key="E_meas")
-    epsg_meas = st.number_input("EPSG for innmålt datasett (projisert, f.eks 25832/5110)", min_value=2000, max_value=99999 value=25832, step=1, key="E_epsg_meas")
+    epsg_meas = st.number_input("EPSG for innmålt datasett (projisert, f.eks 25832/5110)", min_value=2000, max_value=99999, value=25832, step=1, key="E_epsg_meas")
 
     def parse_uploaded(u):
         if not u: return []
