@@ -9,3 +9,4 @@ pillow-heif>=0.16
 streamlit-image-coordinates>=0.1.6
 streamlit-folium
 folium
+geopandas
